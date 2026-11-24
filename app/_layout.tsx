@@ -2,20 +2,50 @@ import 'react-native-get-random-values';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, StyleSheet, Text, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { ErrorBoundary } from '../src/components/ErrorBoundary';
+import { UpdateSheet } from '../src/components/UpdateSheet';
+import {
+  cleanUpInstalledUpdates,
+  configureAppUpdatePersistence,
+  resumePendingUpdate,
+} from '../src/services/updates/appUpdate';
+import {
+  configureUpdatePersistence,
+  useUpdateStore,
+} from '../src/services/updates/updateChecker';
 import { useAppStore } from '../src/store/useAppStore';
 import { ThemeProvider, useTheme } from '../src/theme/ThemeProvider';
 
 function RootNavigator() {
   const initialized = useAppStore((s) => s.initialized);
   const initApp = useAppStore((s) => s.initApp);
+  const updateSettings = useAppStore((s) => s.updateSettings);
   const { colors, isDark } = useTheme();
 
   useEffect(() => {
+    configureUpdatePersistence(updateSettings);
+    configureAppUpdatePersistence(updateSettings);
     initApp();
-  }, [initApp]);
+  }, [initApp, updateSettings]);
+
+  useEffect(() => {
+    if (!initialized) return;
+    const currentSettings = useAppStore.getState().settings;
+    useUpdateStore.getState().hydrate(currentSettings);
+    void resumePendingUpdate(currentSettings.pendingUpdateVersionCode);
+    void useUpdateStore.getState().check();
+    void cleanUpInstalledUpdates();
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void useUpdateStore.getState().check();
+      }
+    });
+    return () => sub.remove();
+  }, [initialized]);
 
   if (!initialized) {
     return (
@@ -42,18 +72,26 @@ function RootNavigator() {
           contentStyle: { backgroundColor: colors.background },
         }}
       />
+      <UpdateSheet />
     </>
   );
 }
 
 export default function RootLayout() {
-  const themeMode = useAppStore((s) => s.settings.theme);
+  const settings = useAppStore((s) => s.settings);
 
   return (
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
-        <ThemeProvider mode={themeMode}>
-          <RootNavigator />
+        <ThemeProvider
+          mode={settings.theme}
+          highContrast={settings.highContrast}
+          fontScale={settings.fontScale}
+          reduceMotion={settings.reduceMotion}
+        >
+          <ErrorBoundary>
+            <RootNavigator />
+          </ErrorBoundary>
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

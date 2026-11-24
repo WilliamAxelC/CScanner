@@ -375,4 +375,127 @@ describe('Google Drive Offline-First Sync Engine', () => {
       'Coffee Receipt - Edited on A (Conflict)',
     ]);
   });
+
+  it('rejects malicious remote manifests and prevents cross-document page ID hijacking', async () => {
+    const drive = new InMemoryDrive();
+    const local = new InMemoryStorage();
+    const engine = new SyncEngine(local, drive, {
+      buildVisiblePdf: async (d) => new TextEncoder().encode(`%PDF-1.4 ${d.title}`),
+    });
+
+    const now = 1_700_000_000_000;
+    const victimPageUri = await local.saveImageBytes(
+      'orig_victim',
+      new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 9, 9]),
+      'jpg',
+    );
+    await local.upsertDocument({
+      id: 'victim_doc',
+      title: 'Victim Doc',
+      folderId: null,
+      tags: [],
+      pageIds: ['shared_page_id'],
+      ocrFullText: 'Victim text',
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+      syncStatus: 'synced',
+    });
+    await local.upsertPage({
+      id: 'shared_page_id',
+      documentId: 'victim_doc',
+      orderIndex: 0,
+      originalUri: victimPageUri,
+      processedUri: victimPageUri,
+      width: 500,
+      height: 700,
+      rotation: 0,
+      filter: 'original',
+      brightness: 0,
+      contrast: 0,
+      ocrText: 'Victim text',
+      ocrBlocks: [],
+      annotations: [],
+      updatedAt: now,
+    });
+
+    const rootId = await drive.ensureFolder('CScanner');
+    const metaId = await drive.ensureFolder('.cscanner-meta', rootId);
+
+    // 1. Malicious manifest whose id mismatches filename & attempts path traversal
+    await drive.uploadMultipart(
+      {
+        name: 'doc-legit_id.json',
+        mimeType: 'application/json',
+        parents: [metaId],
+      },
+      new TextEncoder().encode(
+        JSON.stringify({
+          version: 1,
+          id: '../../escape',
+          title: 'Malicious',
+          pages: [],
+        }),
+      ),
+    );
+
+    // 2. Valid attacker document colliding on victim's page ID
+    const attackerImg = await drive.uploadMultipart(
+      { name: 'img-attacker.jpg', mimeType: 'image/jpeg', parents: [metaId] },
+      new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2]),
+    );
+    await drive.uploadMultipart(
+      {
+        name: 'doc-attacker_doc.json',
+        mimeType: 'application/json',
+        parents: [metaId],
+      },
+      new TextEncoder().encode(
+        JSON.stringify({
+          version: 1,
+          id: 'attacker_doc',
+          title: 'Attacker Doc',
+          folderId: null,
+          tags: [],
+          pageIds: ['shared_page_id'],
+          ocrFullText: 'Hijacked',
+          createdAt: now,
+          updatedAt: now + 1000,
+          deletedAt: null,
+          pages: [
+            {
+              id: 'shared_page_id',
+              orderIndex: 0,
+              width: 500,
+              height: 700,
+              rotation: 0,
+              filter: 'original',
+              brightness: 0,
+              contrast: 0,
+              ocrText: 'Hijacked',
+              ocrBlocks: [],
+              annotations: [],
+              driveImageFileId: attackerImg.id,
+              updatedAt: now + 1000,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const res = await engine.sync();
+    expect(res.errors.length).toBeGreaterThanOrEqual(1);
+    expect(await local.getDocument('../../escape')).toBeNull();
+    expect(await local.getDocument('legit_id')).toBeNull();
+
+    // Victim doc's page must remain intact and owned by victim_doc
+    const victimPage = await local.getPage('shared_page_id');
+    expect(victimPage?.documentId).toBe('victim_doc');
+    expect(victimPage?.ocrText).toBe('Victim text');
+
+    // Attacker doc gets a distinct fresh page ID instead of overwriting victim's page
+    const attackerPages = await local.listPages('attacker_doc');
+    expect(attackerPages).toHaveLength(1);
+    expect(attackerPages[0].id).not.toBe('shared_page_id');
+  });
 });

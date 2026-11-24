@@ -13,6 +13,8 @@ export type QualityPreset = 'low' | 'medium' | 'high';
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 
+export type FontScalePreset = 0.9 | 1.0 | 1.15 | 1.3;
+
 export interface OcrBlock {
   text: string;
   x: number; // normalized 0..1
@@ -145,6 +147,15 @@ export interface AppSettings {
   defaultPageSize: PageSizePreset;
   defaultQuality: QualityPreset;
   autoOcr: boolean;
+  fontScale: FontScalePreset;
+  highContrast: boolean;
+  reduceMotion: boolean;
+  confirmBeforeDelete: boolean;
+  autoCheckUpdates: boolean;
+  updateLastCheckedAt?: number;
+  updateDismissedVersionCode?: number;
+  updateCachedManifestJson?: string;
+  pendingUpdateVersionCode?: number;
   lastSyncAt?: number;
   googleEmail?: string;
   driveRootFolderId?: string;
@@ -157,4 +168,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultPageSize: 'a4',
   defaultQuality: 'medium',
   autoOcr: true,
+  fontScale: 1.0,
+  highContrast: false,
+  reduceMotion: false,
+  confirmBeforeDelete: true,
+  autoCheckUpdates: true,
 };

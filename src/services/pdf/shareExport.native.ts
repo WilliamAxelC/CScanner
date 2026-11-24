@@ -1,7 +1,13 @@
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { storage } from '../../storage';
-import type { Document, ExportOptions, Page, QualityPreset } from '../../types/models';
+import type {
+  Document,
+  ExportOptions,
+  Page,
+  QualityPreset,
+  RedactAnnotation,
+} from '../../types/models';
 import { safeFileStem } from '../../utils/format';
 import { reencodeJpegForExport } from '../image/processor';
 import { buildPdfBytes, type PdfPageInput } from './pdfExporter';
@@ -11,6 +17,12 @@ const QUALITY_MAP: Record<QualityPreset, { maxDim: number; jpegQuality: number }
   medium: { maxDim: 1650, jpegQuality: 0.78 },
   high: { maxDim: 2400, jpegQuality: 0.92 },
 };
+
+function getPageRedactions(page: Page): RedactAnnotation[] {
+  return page.annotations.filter(
+    (a): a is RedactAnnotation => a.type === 'redact',
+  );
+}
 
 export async function buildDocumentPdfBytes(
   _doc: Document,
@@ -35,6 +47,7 @@ export async function buildDocumentPdfBytes(
       page.processedUri,
       targetMax,
       jpegQuality,
+      getPageRedactions(page),
     );
     pageInputs.push({
       jpegBytes: encoded.bytes,
@@ -63,16 +76,24 @@ export async function exportAndShareDocument(
     file.create({ intermediates: true, overwrite: true });
     await file.write(pdfBytes);
 
-    if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/pdf',
-        dialogTitle: `Share ${fileName}`,
-      });
+    try {
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(file.uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: `Share ${fileName}`,
+        });
+      }
+    } finally {
+      try {
+        if (file.exists) file.delete();
+      } catch {
+        // ignore temp cache cleanup errors
+      }
     }
     return { fileName, byteLength: pdfBytes.byteLength };
   }
 
-  // JPEG export (shares pages sequentially or first/single page cleanly)
+  // JPEG export (burns redactions and cleans cache export temp files after sharing)
   const { maxDim, jpegQuality } = QUALITY_MAP[options.quality];
   let totalBytes = 0;
   let lastFileName = `${stem}.jpg`;
@@ -82,6 +103,7 @@ export async function exportAndShareDocument(
       page.processedUri,
       maxDim,
       jpegQuality,
+      getPageRedactions(page),
     );
     const suffix = pages.length > 1 ? `_p${i + 1}` : '';
     lastFileName = `${stem}${suffix}.jpg`;
@@ -89,11 +111,19 @@ export async function exportAndShareDocument(
     file.create({ intermediates: true, overwrite: true });
     await file.write(encoded.bytes);
     totalBytes += encoded.bytes.byteLength;
-    if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'image/jpeg',
-        dialogTitle: `Share ${lastFileName}`,
-      });
+    try {
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(file.uri, {
+          mimeType: 'image/jpeg',
+          dialogTitle: `Share ${lastFileName}`,
+        });
+      }
+    } finally {
+      try {
+        if (file.exists) file.delete();
+      } catch {
+        // ignore temp cache cleanup errors
+      }
     }
   }
   return { fileName: lastFileName, byteLength: totalBytes };

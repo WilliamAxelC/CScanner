@@ -1,6 +1,7 @@
 package com.cscanner.mlkit
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -9,6 +10,9 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
@@ -17,11 +21,14 @@ import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import expo.modules.kotlin.Promise
+import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.security.MessageDigest
 import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
@@ -31,6 +38,10 @@ import kotlin.math.roundToInt
 class CScannerMlkitModule : Module() {
   companion object {
     private const val SCAN_REQUEST_CODE = 44281
+    internal const val MAX_BITMAP_DIM = 4096
+    internal const val MAX_FILTER_DIM = 2400
+    internal const val MAX_SCAN_PAGE_LIMIT = 50
+    internal const val MAX_SCAN_COPY_BYTES = 25L * 1024L * 1024L
 
     internal fun resolveScannerMode(scannerModeStr: String): Int {
       return when (scannerModeStr.uppercase()) {
@@ -47,14 +58,135 @@ class CScannerMlkitModule : Module() {
     ): GmsDocumentScannerOptions {
       return GmsDocumentScannerOptions.Builder()
         .setGalleryImportAllowed(galleryImportAllowed)
-        .setPageLimit(max(1, pageLimit))
+        .setPageLimit(pageLimit.coerceIn(1, MAX_SCAN_PAGE_LIMIT))
         .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
         .setScannerMode(resolveScannerMode(scannerModeStr))
         .build()
     }
+
+    internal fun safeClamp01(value: Double): Float {
+      return if (!value.isFinite()) 0f else value.toFloat().coerceIn(0f, 1f)
+    }
+
+    internal fun calculateInSampleSize(
+      width: Int,
+      height: Int,
+      maxDim: Int = MAX_BITMAP_DIM
+    ): Int {
+      if (width <= 0 || height <= 0 || maxDim <= 0) return 1
+      var inSampleSize = 1
+      var w = width
+      var h = height
+      while (w > maxDim || h > maxDim) {
+        w /= 2
+        h /= 2
+        inSampleSize *= 2
+      }
+      return max(1, inSampleSize)
+    }
+
+    private fun isInsideAllowedRoots(file: File, allowedRoots: List<File>): Boolean {
+      val canonical = try {
+        file.canonicalFile
+      } catch (_: Exception) {
+        return false
+      }
+      val canonicalPath = canonical.path
+      for (root in allowedRoots) {
+        val rootCanonical = try {
+          root.canonicalFile
+        } catch (_: Exception) {
+          continue
+        }
+        val rootPath = rootCanonical.path
+        if (canonicalPath.startsWith("$rootPath${File.separator}")) {
+          val rel = canonicalPath.substring(rootPath.length + 1)
+          val firstSegment = rel.substringBefore(File.separatorChar)
+          if (firstSegment == "databases" || firstSegment == "shared_prefs") {
+            return false
+          }
+          return true
+        }
+      }
+      return false
+    }
+
+    internal fun resolveSafeOutputFile(uriStr: String, allowedRoots: List<File>): File {
+      if (uriStr.isBlank()) {
+        throw SecurityException("Output URI cannot be empty")
+      }
+      val rawPath = if (uriStr.startsWith("/")) {
+        uriStr
+      } else {
+        val parsed = Uri.parse(uriStr)
+        val scheme = parsed.scheme?.lowercase()
+        if (scheme != "file" || parsed.path.isNullOrBlank()) {
+          throw SecurityException("Output URI must use a file:// path within app storage")
+        }
+        parsed.path!!
+      }
+
+      val target = File(rawPath)
+      if (!isInsideAllowedRoots(target, allowedRoots)) {
+        throw SecurityException("Output path is outside allowed app storage roots")
+      }
+      return target.canonicalFile
+    }
+
+    internal fun isAllowedInputUri(uriStr: String, allowedRoots: List<File>): Boolean {
+      if (uriStr.isBlank()) return false
+      if (uriStr.startsWith("/")) {
+        return isInsideAllowedRoots(File(uriStr), allowedRoots)
+      }
+      val parsed = Uri.parse(uriStr)
+      return when (parsed.scheme?.lowercase()) {
+        "content" -> true
+        "file" -> !parsed.path.isNullOrBlank() && isInsideAllowedRoots(File(parsed.path!!), allowedRoots)
+        else -> false
+      }
+    }
+
+    internal fun resolveSafeUpdateApkFile(uriStr: String, cacheDir: File): File {
+      if (uriStr.isBlank()) {
+        throw IllegalArgumentException("APK URI cannot be empty")
+      }
+      val rawPath = if (uriStr.startsWith("/")) {
+        uriStr
+      } else {
+        val parsed = Uri.parse(uriStr)
+        if (parsed.scheme?.lowercase() != "file" || parsed.path.isNullOrBlank()) {
+          throw IllegalArgumentException("APK URI must use a file:// path")
+        }
+        parsed.path!!
+      }
+      val updatesRoot = File(cacheDir, "updates").canonicalFile
+      val target = File(rawPath).canonicalFile
+      val rootPrefix = "${updatesRoot.path}${File.separator}"
+      if (!target.path.startsWith(rootPrefix) || !target.name.endsWith(".apk", ignoreCase = true) || !target.isFile) {
+        throw IllegalArgumentException("APK must reside inside CScanner updates cache")
+      }
+      return target
+    }
+
+    internal fun computeSha256Hex(file: File): String {
+      val digest = MessageDigest.getInstance("SHA-256")
+      file.inputStream().use { input ->
+        val buffer = ByteArray(1 shl 16)
+        while (true) {
+          val read = input.read(buffer)
+          if (read <= 0) break
+          digest.update(buffer, 0, read)
+        }
+      }
+      return digest.digest().joinToString("") { "%02x".format(it) }
+    }
   }
 
   private var pendingScanPromise: Promise? = null
+
+  private fun getAllowedRoots(context: android.content.Context): List<File> {
+    return listOfNotNull(context.filesDir, context.cacheDir)
+  }
 
   override fun definition() = ModuleDefinition {
     Name("CScannerMlkit")
@@ -85,15 +217,27 @@ class CScannerMlkitModule : Module() {
         val outDir = File(context.cacheDir, "mlkit-scans").apply { mkdirs() }
         val pages = mutableListOf<Map<String, Any>>()
 
-        scanResult.pages?.forEach { page ->
+        scanResult.pages?.take(MAX_SCAN_PAGE_LIMIT)?.forEach { page ->
           val destFile = File(outDir, "${UUID.randomUUID()}.jpg")
-          context.contentResolver.openInputStream(page.imageUri)?.use { input ->
+          val copied = context.contentResolver.openInputStream(page.imageUri)?.use { input ->
             FileOutputStream(destFile).use { output ->
-              input.copyTo(output)
+              copyBounded(input, output, MAX_SCAN_COPY_BYTES)
             }
+            true
+          } ?: false
+
+          if (!copied || !destFile.exists()) {
+            destFile.delete()
+            return@forEach
           }
+
           val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
           BitmapFactory.decodeFile(destFile.absolutePath, opts)
+          if (opts.outWidth <= 0 || opts.outHeight <= 0) {
+            destFile.delete()
+            return@forEach
+          }
+
           pages.add(
             mapOf(
               "uri" to Uri.fromFile(destFile).toString(),
@@ -105,11 +249,7 @@ class CScannerMlkitModule : Module() {
 
         promise.resolve(mapOf("cancelled" to false, "pages" to pages))
       } catch (t: Throwable) {
-        promise.reject(
-          "ERR_SCAN_RESULT",
-          "${t.javaClass.simpleName}: ${t.message ?: "Failed processing scan result"}",
-          t
-        )
+        promise.reject("ERR_SCAN_RESULT", "Failed processing scanned pages", null)
       }
     }
 
@@ -140,23 +280,18 @@ class CScannerMlkitModule : Module() {
                 0,
                 0
               )
-            } catch (e: Throwable) {
+            } catch (_: Throwable) {
               pendingScanPromise = null
-              promise.reject("ERR_LAUNCH_SCANNER", e.message ?: "Failed to launch ML Kit scanner", e)
+              promise.reject("ERR_LAUNCH_SCANNER", "Failed to launch ML Kit scanner", null)
             }
           }
-          .addOnFailureListener { e ->
+          .addOnFailureListener { _ ->
             pendingScanPromise = null
-            promise.reject("ERR_SCANNER_UNAVAILABLE", e.message ?: "ML Kit scanner unavailable", e)
+            promise.reject("ERR_SCANNER_UNAVAILABLE", "ML Kit document scanner is unavailable on this device", null)
           }
-      } catch (t: Throwable) {
+      } catch (_: Throwable) {
         pendingScanPromise = null
-        val frame = t.stackTrace.firstOrNull()?.let { "${it.className}.${it.methodName}:${it.lineNumber}" } ?: "unknown"
-        promise.reject(
-          "ERR_SCAN_EXCEPTION",
-          "${t.javaClass.name}: ${t.message ?: "null"} ($frame)",
-          t
-        )
+        promise.reject("ERR_SCAN_EXCEPTION", "Unable to start document scanner", null)
       }
     }.runOnQueue(Queues.MAIN)
 
@@ -165,10 +300,16 @@ class CScannerMlkitModule : Module() {
         promise.reject("ERR_CONTEXT", "React context unavailable", null)
         return@AsyncFunction
       }
+      var bitmap: Bitmap? = null
       try {
+        val allowedRoots = getAllowedRoots(context)
+        if (!isAllowedInputUri(imageUri, allowedRoots)) {
+          promise.reject("ERR_INVALID_URI", "Image URI is not inside permitted app storage", null)
+          return@AsyncFunction
+        }
         val uri = parseUri(imageUri)
-        val bitmap = decodeOrientedBitmap(context.contentResolver, uri)
-          ?: throw IllegalArgumentException("Could not decode image at $imageUri")
+        bitmap = decodeOrientedBitmap(context.contentResolver, uri)
+          ?: throw IllegalArgumentException("Could not decode image")
         val width = max(1, bitmap.width).toFloat()
         val height = max(1, bitmap.height).toFloat()
 
@@ -177,35 +318,39 @@ class CScannerMlkitModule : Module() {
 
         recognizer.process(image)
           .addOnSuccessListener { visionText ->
-            val blocks = mutableListOf<Map<String, Any>>()
-            for (block in visionText.textBlocks) {
-              for (line in block.lines) {
-                val box = line.boundingBox ?: continue
-                blocks.add(
-                  mapOf(
-                    "text" to line.text,
-                    "x" to (box.left.toFloat() / width).coerceIn(0f, 1f),
-                    "y" to (box.top.toFloat() / height).coerceIn(0f, 1f),
-                    "width" to (box.width().toFloat() / width).coerceIn(0f, 1f),
-                    "height" to (box.height().toFloat() / height).coerceIn(0f, 1f)
+            try {
+              val blocks = mutableListOf<Map<String, Any>>()
+              for (block in visionText.textBlocks) {
+                for (line in block.lines) {
+                  val box = line.boundingBox ?: continue
+                  blocks.add(
+                    mapOf(
+                      "text" to line.text,
+                      "x" to (box.left.toFloat() / width).coerceIn(0f, 1f),
+                      "y" to (box.top.toFloat() / height).coerceIn(0f, 1f),
+                      "width" to (box.width().toFloat() / width).coerceIn(0f, 1f),
+                      "height" to (box.height().toFloat() / height).coerceIn(0f, 1f)
+                    )
                   )
-                )
+                }
               }
-            }
-            bitmap.recycle()
-            promise.resolve(
-              mapOf(
-                "fullText" to visionText.text,
-                "blocks" to blocks
+              promise.resolve(
+                mapOf(
+                  "fullText" to visionText.text,
+                  "blocks" to blocks
+                )
               )
-            )
+            } finally {
+              bitmap?.recycle()
+            }
           }
-          .addOnFailureListener { e ->
-            bitmap.recycle()
-            promise.reject("ERR_OCR_FAILED", e.message ?: "Text recognition failed", e)
+          .addOnFailureListener { _ ->
+            bitmap?.recycle()
+            promise.reject("ERR_OCR_FAILED", "On-device text recognition failed", null)
           }
-      } catch (e: Exception) {
-        promise.reject("ERR_OCR_LOAD", e.message ?: "Failed to prepare OCR image", e)
+      } catch (_: Throwable) {
+        bitmap?.recycle()
+        promise.reject("ERR_OCR_LOAD", "Failed to prepare image for OCR", null)
       }
     }
 
@@ -220,103 +365,255 @@ class CScannerMlkitModule : Module() {
       qualityRaw: Int ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("React context unavailable")
+      val allowedRoots = getAllowedRoots(context)
+      if (!isAllowedInputUri(inputUri, allowedRoots)) {
+        throw SecurityException("Input URI is outside permitted app storage")
+      }
+      val outFile = resolveSafeOutputFile(outputUri, allowedRoots)
 
-      val brightness = brightnessDouble.toFloat()
-      val contrast = contrastDouble.toFloat()
+      val brightness = if (brightnessDouble.isFinite()) brightnessDouble.toFloat().coerceIn(-100f, 100f) else 0f
+      val contrast = if (contrastDouble.isFinite()) contrastDouble.toFloat().coerceIn(-100f, 100f) else 0f
       val quality = qualityRaw.coerceIn(30, 100)
 
       var bitmap = decodeOrientedBitmap(context.contentResolver, parseUri(inputUri))
-        ?: throw IllegalArgumentException("Unable to decode inputUri: $inputUri")
+        ?: throw IllegalArgumentException("Unable to decode input image")
 
-      if (quadCoords != null && quadCoords.size == 8) {
-        bitmap = warpQuadBitmap(bitmap, quadCoords)
+      try {
+        if (quadCoords != null && quadCoords.size == 8) {
+          bitmap = warpQuadBitmap(bitmap, quadCoords)
+        }
+
+        if (rotation % 360 != 0) {
+          val m = Matrix().apply { postRotate((rotation % 360).toFloat()) }
+          val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
+          if (rotated != bitmap) bitmap.recycle()
+          bitmap = rotated
+        }
+
+        // Bound dimensions before per-pixel IntArray filter allocation to prevent OOM
+        bitmap = downscaleIfNeeded(bitmap, MAX_FILTER_DIM)
+
+        if (filter != "original" || brightness != 0f || contrast != 0f) {
+          val filtered = applyPixelFilter(bitmap, filter, brightness, contrast)
+          if (filtered != bitmap) bitmap.recycle()
+          bitmap = filtered
+        }
+
+        outFile.parentFile?.mkdirs()
+        FileOutputStream(outFile).use { fos ->
+          if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, fos)) {
+            throw IllegalStateException("Failed compressing processed JPEG")
+          }
+        }
+
+        val w = bitmap.width
+        val h = bitmap.height
+        mapOf(
+          "uri" to Uri.fromFile(outFile).toString(),
+          "width" to w,
+          "height" to h
+        )
+      } finally {
+        if (!bitmap.isRecycled) {
+          bitmap.recycle()
+        }
       }
+    }
 
-      if (rotation % 360 != 0) {
-        val m = Matrix().apply { postRotate((rotation % 360).toFloat()) }
-        val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
-        if (rotated != bitmap) bitmap.recycle()
-        bitmap = rotated
+    AsyncFunction("redactImage") {
+      inputUri: String,
+      outputUri: String,
+      redactRects: List<Double>,
+      redactColors: List<String>,
+      maxDimRaw: Int,
+      qualityRaw: Int ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("React context unavailable")
+      val allowedRoots = getAllowedRoots(context)
+      if (!isAllowedInputUri(inputUri, allowedRoots)) {
+        throw SecurityException("Input URI is outside permitted app storage")
       }
+      val outFile = resolveSafeOutputFile(outputUri, allowedRoots)
+      val maxDim = maxDimRaw.coerceIn(64, MAX_BITMAP_DIM)
+      val quality = qualityRaw.coerceIn(30, 100)
 
-      if (filter != "original" || brightness != 0f || contrast != 0f) {
-        val filtered = applyPixelFilter(bitmap, filter, brightness, contrast)
-        if (filtered != bitmap) bitmap.recycle()
-        bitmap = filtered
+      var bitmap = decodeOrientedBitmap(context.contentResolver, parseUri(inputUri))
+        ?: throw IllegalArgumentException("Unable to decode input image")
+
+      try {
+        bitmap = downscaleIfNeeded(bitmap, maxDim)
+        val mutable = if (bitmap.isMutable) bitmap else {
+          val copy = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+          bitmap.recycle()
+          copy
+        }
+        bitmap = mutable
+
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val w = bitmap.width.toFloat()
+        val h = bitmap.height.toFloat()
+
+        val rectCount = min(redactRects.size / 4, 200)
+        for (i in 0 until rectCount) {
+          val rx = safeClamp01(redactRects[i * 4]) * w
+          val ry = safeClamp01(redactRects[i * 4 + 1]) * h
+          val rw = safeClamp01(redactRects[i * 4 + 2]) * w
+          val rh = safeClamp01(redactRects[i * 4 + 3]) * h
+          val colorStr = redactColors.getOrNull(i) ?: "#000000"
+          paint.color = if (colorStr.equals("#FFFFFF", ignoreCase = true)) Color.WHITE else Color.BLACK
+          canvas.drawRect(rx, ry, rx + rw, ry + rh, paint)
+        }
+
+        outFile.parentFile?.mkdirs()
+        FileOutputStream(outFile).use { fos ->
+          if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, fos)) {
+            throw IllegalStateException("Failed writing redacted JPEG")
+          }
+        }
+
+        mapOf(
+          "uri" to Uri.fromFile(outFile).toString(),
+          "width" to bitmap.width,
+          "height" to bitmap.height
+        )
+      } finally {
+        if (!bitmap.isRecycled) {
+          bitmap.recycle()
+        }
       }
-
-      val outFile = uriToFile(outputUri)
-      outFile.parentFile?.mkdirs()
-      FileOutputStream(outFile).use { fos ->
-        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, fos)
-      }
-
-      val w = bitmap.width
-      val h = bitmap.height
-      bitmap.recycle()
-
-      mapOf(
-        "uri" to Uri.fromFile(outFile).toString(),
-        "width" to w,
-        "height" to h
-      )
     }
 
     AsyncFunction("composeIdCard") { frontUri: String, backUri: String, outputUri: String ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("React context unavailable")
-
-      val frontBmp = decodeOrientedBitmap(context.contentResolver, parseUri(frontUri))
-        ?: throw IllegalArgumentException("Unable to decode frontUri")
-      val backBmp = decodeOrientedBitmap(context.contentResolver, parseUri(backUri))
-        ?: throw IllegalArgumentException("Unable to decode backUri")
-
-      val pageW = 1240
-      val pageH = 1754
-      val canvasBmp = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
-      val canvas = Canvas(canvasBmp)
-      canvas.drawColor(Color.WHITE)
-
-      val borderPaint = Paint().apply {
-        color = Color.rgb(203, 213, 225)
-        style = Paint.Style.STROKE
-        strokeWidth = 3f
+      val allowedRoots = getAllowedRoots(context)
+      if (!isAllowedInputUri(frontUri, allowedRoots) || !isAllowedInputUri(backUri, allowedRoots)) {
+        throw SecurityException("ID card input URI is outside permitted app storage")
       }
-      val imgPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+      val outFile = resolveSafeOutputFile(outputUri, allowedRoots)
 
-      val marginX = 110f
-      val maxSlotW = pageW - marginX * 2f
-      val maxSlotH = 660f
+      var frontBmp: Bitmap? = null
+      var backBmp: Bitmap? = null
+      var canvasBmp: Bitmap? = null
+      try {
+        frontBmp = decodeOrientedBitmap(context.contentResolver, parseUri(frontUri))
+          ?: throw IllegalArgumentException("Unable to decode front ID card image")
+        backBmp = decodeOrientedBitmap(context.contentResolver, parseUri(backUri))
+          ?: throw IllegalArgumentException("Unable to decode back ID card image")
 
-      fun drawCard(bmp: Bitmap, centerY: Float) {
-        val scale = min(maxSlotW / bmp.width.toFloat(), maxSlotH / bmp.height.toFloat())
-        val dw = bmp.width * scale
-        val dh = bmp.height * scale
-        val left = (pageW - dw) / 2f
-        val top = centerY - dh / 2f
-        val rect = RectF(left, top, left + dw, top + dh)
-        canvas.drawBitmap(bmp, null, rect, imgPaint)
-        canvas.drawRect(rect, borderPaint)
+        val pageW = 1240
+        val pageH = 1754
+        canvasBmp = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(canvasBmp)
+        canvas.drawColor(Color.WHITE)
+
+        val borderPaint = Paint().apply {
+          color = Color.rgb(203, 213, 225)
+          style = Paint.Style.STROKE
+          strokeWidth = 3f
+        }
+        val imgPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+        val marginX = 110f
+        val maxSlotW = pageW - marginX * 2f
+        val maxSlotH = 660f
+
+        fun drawCard(bmp: Bitmap, centerY: Float) {
+          val scale = min(maxSlotW / bmp.width.toFloat(), maxSlotH / bmp.height.toFloat())
+          val dw = bmp.width * scale
+          val dh = bmp.height * scale
+          val left = (pageW - dw) / 2f
+          val top = centerY - dh / 2f
+          val rect = RectF(left, top, left + dw, top + dh)
+          canvas.drawBitmap(bmp, null, rect, imgPaint)
+          canvas.drawRect(rect, borderPaint)
+        }
+
+        drawCard(frontBmp, pageH * 0.28f)
+        drawCard(backBmp, pageH * 0.72f)
+
+        outFile.parentFile?.mkdirs()
+        FileOutputStream(outFile).use { fos ->
+          if (!canvasBmp.compress(Bitmap.CompressFormat.JPEG, 92, fos)) {
+            throw IllegalStateException("Failed compressing ID sheet JPEG")
+          }
+        }
+
+        mapOf(
+          "uri" to Uri.fromFile(outFile).toString(),
+          "width" to pageW,
+          "height" to pageH
+        )
+      } finally {
+        frontBmp?.recycle()
+        backBmp?.recycle()
+        canvasBmp?.recycle()
       }
+    }
 
-      drawCard(frontBmp, pageH * 0.28f)
-      drawCard(backBmp, pageH * 0.72f)
+    AsyncFunction("sha256File") { uriStr: String ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      val file = resolveSafeUpdateApkFile(uriStr, context.cacheDir)
+      computeSha256Hex(file)
+    }.runOnQueue(Queues.DEFAULT)
 
-      frontBmp.recycle()
-      backBmp.recycle()
-
-      val outFile = uriToFile(outputUri)
-      outFile.parentFile?.mkdirs()
-      FileOutputStream(outFile).use { fos ->
-        canvasBmp.compress(Bitmap.CompressFormat.JPEG, 92, fos)
+    Function("canInstallPackages") {
+      val context = appContext.reactContext ?: return@Function false
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        context.packageManager.canRequestPackageInstalls()
+      } else {
+        true
       }
-      canvasBmp.recycle()
+    }
 
+    Function("openInstallPermissionSettings") {
+      val context = appContext.reactContext ?: return@Function false
+      val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        Intent(
+          Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+          Uri.parse("package:${context.packageName}")
+        )
+      } else {
+        Intent(Settings.ACTION_SECURITY_SETTINGS)
+      }
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      context.startActivity(intent)
+      true
+    }
+
+    Function("inspectApk") { uriStr: String ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      val file = resolveSafeUpdateApkFile(uriStr, context.cacheDir)
+      @Suppress("DEPRECATION")
+      val info = context.packageManager.getPackageArchiveInfo(file.absolutePath, 0)
+        ?: return@Function null
+      val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        info.longVersionCode
+      } else {
+        @Suppress("DEPRECATION")
+        info.versionCode.toLong()
+      }
       mapOf(
-        "uri" to Uri.fromFile(outFile).toString(),
-        "width" to pageW,
-        "height" to pageH
+        "packageName" to info.packageName,
+        "versionCode" to code.toDouble(),
+        "versionName" to (info.versionName ?: "")
       )
+    }
+
+    Function("installApk") { uriStr: String ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      val file = resolveSafeUpdateApkFile(uriStr, context.cacheDir)
+      val contentUri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.FileSystemFileProvider",
+        file
+      )
+      val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(contentUri, "application/vnd.android.package-archive")
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+      context.startActivity(intent)
+      true
     }
   }
 
@@ -324,17 +621,49 @@ class CScannerMlkitModule : Module() {
     return if (uriStr.startsWith("/")) Uri.fromFile(File(uriStr)) else Uri.parse(uriStr)
   }
 
-  private fun uriToFile(uriStr: String): File {
-    val parsed = parseUri(uriStr)
-    return File(parsed.path ?: uriStr)
+  private fun copyBounded(input: InputStream, output: FileOutputStream, maxBytes: Long) {
+    val buffer = ByteArray(16 * 1024)
+    var total = 0L
+    while (true) {
+      val n = input.read(buffer)
+      if (n <= 0) break
+      total += n
+      if (total > maxBytes) {
+        throw SecurityException("Scanned image exceeds maximum allowed size")
+      }
+      output.write(buffer, 0, n)
+    }
+  }
+
+  private fun downscaleIfNeeded(src: Bitmap, maxDim: Int): Bitmap {
+    val largest = max(src.width, src.height)
+    if (largest <= maxDim || largest <= 0) return src
+    val scale = maxDim.toFloat() / largest.toFloat()
+    val w = max(1, (src.width * scale).roundToInt())
+    val h = max(1, (src.height * scale).roundToInt())
+    val scaled = Bitmap.createScaledBitmap(src, w, h, true)
+    if (scaled != src) src.recycle()
+    return scaled
   }
 
   private fun decodeOrientedBitmap(
     resolver: android.content.ContentResolver,
     uri: Uri
   ): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    resolver.openInputStream(uri)?.use { stream ->
+      BitmapFactory.decodeStream(stream, null, bounds)
+    } ?: return null
+
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+      return null
+    }
+
+    val decodeOpts = BitmapFactory.Options().apply {
+      inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight, MAX_BITMAP_DIM)
+    }
     val raw = resolver.openInputStream(uri)?.use { stream ->
-      BitmapFactory.decodeStream(stream)
+      BitmapFactory.decodeStream(stream, null, decodeOpts)
     } ?: return null
 
     val orientation = try {
@@ -355,19 +684,19 @@ class CScannerMlkitModule : Module() {
       else -> 0f
     }
 
-    if (angle == 0f) return raw
+    if (angle == 0f) return downscaleIfNeeded(raw, MAX_BITMAP_DIM)
     val m = Matrix().apply { postRotate(angle) }
     val rotated = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
     if (rotated != raw) raw.recycle()
-    return rotated
+    return downscaleIfNeeded(rotated, MAX_BITMAP_DIM)
   }
 
   private fun warpQuadBitmap(src: Bitmap, quadCoords: List<Double>): Bitmap {
     val w = src.width.toFloat()
     val h = src.height.toFloat()
     fun pt(i: Int): Pair<Float, Float> {
-      val x = quadCoords[i * 2].toFloat().coerceIn(0f, 1f) * w
-      val y = quadCoords[i * 2 + 1].toFloat().coerceIn(0f, 1f) * h
+      val x = safeClamp01(quadCoords[i * 2]) * w
+      val y = safeClamp01(quadCoords[i * 2 + 1]) * h
       return x to y
     }
 
@@ -400,7 +729,9 @@ class CScannerMlkitModule : Module() {
     )
 
     val matrix = Matrix()
-    matrix.setPolyToPoly(srcPts, 0, dstPts, 0, 4)
+    if (!matrix.setPolyToPoly(srcPts, 0, dstPts, 0, 4)) {
+      return src
+    }
 
     val out = Bitmap.createBitmap(dstW, dstH, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
@@ -420,6 +751,7 @@ class CScannerMlkitModule : Module() {
     val w = src.width
     val h = src.height
     val count = w * h
+    if (count <= 0) return src
     val pixels = IntArray(count)
     src.getPixels(pixels, 0, w, 0, 0, w, h)
 
@@ -536,6 +868,7 @@ class CScannerMlkitModule : Module() {
           }
         }
       }
+      else -> return src
     }
 
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)

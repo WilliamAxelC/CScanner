@@ -36,46 +36,83 @@ ssh "${REMOTE_HOST}" "
   fi
 
   python3 - << 'PYEOF'
-import re
-
 with open('nginx.conf', 'r', encoding='utf-8') as f:
     conf = f.read()
 
-cscanner_block = '''    # CScanner (Ad-free document scanner Web PWA + Android APK download)
-    location = /projects/cscanner {
+csp_pwa = (
+    \"default-src 'self'; \"
+    \"script-src 'self' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net https://static.cloudflareinsights.com; \"
+    \"worker-src 'self' blob: https://cdn.jsdelivr.net; \"
+    \"style-src 'self' 'unsafe-inline'; \"
+    \"img-src 'self' blob: data:; \"
+    \"connect-src 'self' blob: data: https://www.googleapis.com https://accounts.google.com https://oauth2.googleapis.com https://cuang.dev https://cdn.jsdelivr.net https://tessdata.projectnaptha.com https://cloudflareinsights.com; \"
+    \"font-src 'self' data:; \"
+    \"object-src 'none'; \"
+    \"base-uri 'self'; \"
+    \"form-action 'self' https://github.com https://accounts.google.com; \"
+    \"frame-ancestors 'none';\"
+)
+csp_dl = (
+    \"default-src 'none'; \"
+    \"style-src 'unsafe-inline'; \"
+    \"img-src 'self' data:; \"
+    \"script-src https://static.cloudflareinsights.com; \"
+    \"connect-src 'self' https://cloudflareinsights.com; \"
+    \"base-uri 'none'; \"
+    \"form-action 'none'; \"
+    \"frame-ancestors 'none';\"
+)
+
+sec_pwa = (
+    '        add_header X-Content-Type-Options \"nosniff\" always;\n'
+    '        add_header X-Frame-Options \"DENY\" always;\n'
+    '        add_header Referrer-Policy \"no-referrer\" always;\n'
+    '        add_header Permissions-Policy \"camera=(self), microphone=(), geolocation=(), payment=(), usb=()\" always;\n'
+    f'        add_header Content-Security-Policy \"{csp_pwa}\" always;'
+)
+sec_dl = (
+    '        add_header X-Content-Type-Options \"nosniff\" always;\n'
+    '        add_header X-Frame-Options \"DENY\" always;\n'
+    '        add_header Referrer-Policy \"no-referrer\" always;\n'
+    '        add_header Permissions-Policy \"camera=(), microphone=(), geolocation=(), payment=(), usb=()\" always;\n'
+    f'        add_header Content-Security-Policy \"{csp_dl}\" always;'
+)
+
+cscanner_block = f'''    # CScanner (Ad-free document scanner Web PWA + Android APK download)
+    location = /projects/cscanner {{
         return 301 /projects/cscanner/;
-    }
-    location = /projects/cscanner/download {
+    }}
+    location = /projects/cscanner/download {{
         return 301 /projects/cscanner/download/;
-    }
-    location ^~ /projects/cscanner/download/ {
+    }}
+    location ^~ /projects/cscanner/download/ {{
         root   /usr/share/nginx/html;
         index  index.html;
         try_files \$uri \$uri/ =404;
-        location ~ \\.apk\$ {
-            types { application/vnd.android.package-archive apk; }
+{sec_dl}
+        location ~ \\.apk\$ {{
+            types {{ application/vnd.android.package-archive apk; }}
             add_header Content-Disposition \"attachment\";
             add_header Cache-Control \"no-cache\";
-        }
-    }
-    location ^~ /projects/cscanner/ {
+{sec_dl.replace('        ', '            ')}
+        }}
+    }}
+    location ^~ /projects/cscanner/ {{
         root   /usr/share/nginx/html;
         index  index.html;
         try_files \$uri \$uri/ /projects/cscanner/index.html;
-        location = /projects/cscanner/sw.js {
+{sec_pwa}
+        location = /projects/cscanner/sw.js {{
             add_header Cache-Control \"no-cache, no-store, must-revalidate\";
             add_header Service-Worker-Allowed \"/projects/cscanner/\";
-        }
-        location = /projects/cscanner/manifest.json {
+{sec_pwa.replace('        ', '            ')}
+        }}
+        location = /projects/cscanner/manifest.json {{
             add_header Cache-Control \"no-cache\";
-        }
-    }'''
+{sec_pwa.replace('        ', '            ')}
+        }}
+    }}'''
 
-pattern = re.compile(
-    r'    # CScanner \(Ad-free document scanner Web PWA \+ Android APK download\).*?\n    \}\n',
-    re.DOTALL,
-)
-# Match until the outer closing brace of location ^~ /projects/cscanner/
 marker_start = '    # CScanner (Ad-free document scanner Web PWA + Android APK download)'
 marker_end = '    # AudioDiff Redirect /AudioDiff -> /AudioDiff/'
 if marker_start in conf and marker_end in conf:

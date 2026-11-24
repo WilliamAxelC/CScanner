@@ -1,5 +1,25 @@
 import { requireOptionalNativeModule } from 'expo';
-import type { FilterPreset, OcrResult, Quad } from '../../../src/types/models';
+import { Platform } from 'react-native';
+import type {
+  FilterPreset,
+  OcrResult,
+  Quad,
+  RedactAnnotation,
+} from '../../../src/types/models';
+
+export interface ApkArchiveInfo {
+  packageName: string;
+  versionCode: number;
+  versionName: string;
+}
+
+export interface UpdateNativeApi {
+  sha256File(uri: string): Promise<string>;
+  canInstallPackages(): boolean;
+  openInstallPermissionSettings(): boolean;
+  inspectApk(uri: string): ApkArchiveInfo | null;
+  installApk(uri: string): boolean;
+}
 
 export interface ScannedPageNative {
   uri: string;
@@ -23,6 +43,14 @@ export interface ProcessImageNativeParams {
   quality?: number;
 }
 
+export interface RedactImageNativeParams {
+  inputUri: string;
+  outputUri: string;
+  redactions: RedactAnnotation[];
+  maxDim: number;
+  quality: number;
+}
+
 interface CScannerMlkitNativeInterface {
   scanDocument(
     pageLimit: number,
@@ -40,15 +68,35 @@ interface CScannerMlkitNativeInterface {
     contrast: number,
     quality: number,
   ): Promise<ScannedPageNative>;
+  redactImage(
+    inputUri: string,
+    outputUri: string,
+    redactRects: number[],
+    redactColors: string[],
+    maxDim: number,
+    quality: number,
+  ): Promise<ScannedPageNative>;
   composeIdCard(
     frontUri: string,
     backUri: string,
     outputUri: string,
   ): Promise<ScannedPageNative>;
+  sha256File(uri: string): Promise<string>;
+  canInstallPackages(): boolean;
+  openInstallPermissionSettings(): boolean;
+  inspectApk(uri: string): ApkArchiveInfo | null;
+  installApk(uri: string): boolean;
 }
 
 const NativeModule =
   requireOptionalNativeModule<CScannerMlkitNativeInterface>('CScannerMlkit');
+
+export function getNativeUpdater(): UpdateNativeApi | null {
+  if (Platform.OS !== 'android' || !NativeModule || typeof NativeModule.installApk !== 'function') {
+    return null;
+  }
+  return NativeModule;
+}
 
 export function isNativeScannerAvailable(): boolean {
   return NativeModule !== null;
@@ -62,7 +110,7 @@ export async function scanDocumentNative(options?: {
   if (!NativeModule) {
     throw new Error('CScannerMlkit native module is not available on this build');
   }
-  const pageLimit = options?.pageLimit ?? 24;
+  const pageLimit = Math.max(1, Math.min(50, options?.pageLimit ?? 24));
   const galleryImportAllowed = options?.galleryImportAllowed ?? true;
   const scannerMode = options?.scannerMode ?? 'FULL';
   return NativeModule.scanDocument(pageLimit, galleryImportAllowed, scannerMode);
@@ -104,6 +152,28 @@ export async function processImageNative(
     params.brightness,
     params.contrast,
     params.quality ?? 88,
+  );
+}
+
+export async function redactImageNative(
+  params: RedactImageNativeParams,
+): Promise<ScannedPageNative> {
+  if (!NativeModule) {
+    throw new Error('CScannerMlkit native module is not available on this build');
+  }
+  const flatRects: number[] = [];
+  const colors: string[] = [];
+  for (const r of params.redactions) {
+    flatRects.push(r.x, r.y, r.width, r.height);
+    colors.push(r.color);
+  }
+  return NativeModule.redactImage(
+    params.inputUri,
+    params.outputUri,
+    flatRects,
+    colors,
+    params.maxDim,
+    params.quality,
   );
 }
 

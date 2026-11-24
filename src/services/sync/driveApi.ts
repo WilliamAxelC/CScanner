@@ -1,3 +1,10 @@
+import { generateId } from '../../utils/ids';
+import {
+  assertValidMimeType,
+  escapeDriveQueryValue,
+  sanitizeErrorMessage,
+} from '../../utils/security';
+
 export interface DriveFile {
   id: string;
   name: string;
@@ -22,9 +29,7 @@ const DRIVE_FILES_URL = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
-function escapeQueryValue(val: string): string {
-  return val.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-}
+export { escapeDriveQueryValue };
 
 function concatUint8(parts: Uint8Array[]): Uint8Array {
   let total = 0;
@@ -55,7 +60,9 @@ export class FetchDriveClient implements DriveClient {
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Error(`Google Drive API error ${res.status}: ${body}`);
+      throw new Error(
+        `Google Drive API error ${res.status}: ${sanitizeErrorMessage(body || res.statusText, 140)}`,
+      );
     }
     return res;
   }
@@ -86,9 +93,9 @@ export class FetchDriveClient implements DriveClient {
   }
 
   async ensureFolder(name: string, parentId?: string): Promise<string> {
-    const escaped = escapeQueryValue(name);
+    const escaped = escapeDriveQueryValue(name);
     const parentClause = parentId
-      ? `'${escapeQueryValue(parentId)}' in parents`
+      ? `'${escapeDriveQueryValue(parentId)}' in parents`
       : `'root' in parents`;
     const query = `name = '${escaped}' and mimeType = '${FOLDER_MIME}' and ${parentClause} and trashed = false`;
 
@@ -117,12 +124,13 @@ export class FetchDriveClient implements DriveClient {
     bytes: Uint8Array,
     existingFileId?: string,
   ): Promise<DriveFile> {
-    const boundary = `cscanner_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const validMime = assertValidMimeType(metadata.mimeType);
+    const boundary = `cscanner_${generateId().replace(/-/g, '')}`;
     const encoder = new TextEncoder();
 
     const cleanMeta: Record<string, unknown> = {
-      name: metadata.name,
-      mimeType: metadata.mimeType,
+      name: metadata.name.replace(/[\r\n\0]/g, '_'),
+      mimeType: validMime,
     };
     // Drive PATCH does not allow `parents` inside metadata body
     if (!existingFileId && metadata.parents?.length) {
@@ -130,7 +138,7 @@ export class FetchDriveClient implements DriveClient {
     }
 
     const head = encoder.encode(
-      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(cleanMeta)}\r\n--${boundary}\r\nContent-Type: ${metadata.mimeType}\r\n\r\n`,
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(cleanMeta)}\r\n--${boundary}\r\nContent-Type: ${validMime}\r\n\r\n`,
     );
     const tail = encoder.encode(`\r\n--${boundary}--`);
     const bodyBytes = concatUint8([head, bytes, tail]);

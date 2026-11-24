@@ -1,2 +1,2 @@
 export { resolveDisplayUri, storage } from './database';
-export type { StorageAdapter } from './types';
+export type { StorageAdapter, StorageStats } from './types';

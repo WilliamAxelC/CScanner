@@ -271,6 +271,46 @@ async function run() {
         .waitFor({ timeout: 10000 });
     }
 
+    console.log('10. Checking production Settings, Accessibility, App Info, Report & Privacy screens');
+    const vis = (loc) => loc.filter({ visible: true }).last();
+    await page.goto(baseUrl, { waitUntil: 'networkidle' });
+    await vis(page.getByLabel('Settings')).click();
+    await vis(page.getByText('APPEARANCE & ACCESSIBILITY', { exact: true })).waitFor({ timeout: 15000 });
+
+    // Accessibility screen
+    await vis(page.getByLabel('Accessibility')).click();
+    await vis(page.getByText('App Text Size', { exact: true })).waitFor({ timeout: 10000 });
+    await vis(page.getByLabel('Text size Large 115%')).click();
+    await vis(page.getByRole('switch', { name: 'High Contrast Mode' })).click();
+    await vis(page.getByRole('switch', { name: 'Reduce Motion' })).click();
+    await vis(page.getByLabel('Back')).click();
+
+    // App Info screen
+    await vis(page.getByLabel('App Info')).click();
+    await vis(page.getByText('com.cscanner.app', { exact: true })).waitFor({ timeout: 10000 });
+    await vis(page.getByText('Version 1.1.0 (build 2)', { exact: true })).waitFor({ timeout: 10000 });
+    await vis(page.getByLabel('View Diagnostics')).click();
+    await vis(page.getByText(/Package ID: com\.cscanner\.app/)).waitFor({ timeout: 10000 });
+    await vis(page.getByLabel('Open Source Licenses')).click();
+    await vis(page.getByText(/Google ML Kit Document Scanner/)).waitFor({ timeout: 10000 });
+    await vis(page.getByLabel('Back')).click();
+
+    // Report screen
+    await vis(page.getByLabel('Report a Bug')).click();
+    await vis(page.getByLabel('Open Pre-filled GitHub Issue')).click();
+    await vis(page.getByText(/Please enter a short summary title/)).waitFor({ timeout: 10000 });
+    await vis(page.getByLabel('Feature Request')).click();
+    await vis(page.getByLabel('Summary Title')).fill('Batch tag editor');
+    await vis(page.getByLabel('Report Details')).fill('Allow editing tags across multiple scanned documents cleanly.');
+    await vis(page.getByLabel('Show Payload Preview')).click();
+    await vis(page.getByText(/## Feature Request/)).waitFor({ timeout: 10000 });
+    await vis(page.getByLabel('Back')).click();
+
+    // Privacy screen
+    await vis(page.getByLabel('Privacy What Leaves Your Device')).click();
+    await vis(page.getByText('EVERY NETWORK REQUEST THIS APP CAN MAKE', { exact: true })).waitFor({ timeout: 10000 });
+    await vis(page.getByText(/cuang\.dev\/projects\/cscanner\/download\/version\.json/)).waitFor({ timeout: 10000 });
+
     assert(
       failedAppRequests.length === 0,
       `Failed app requests: ${failedAppRequests.join(' | ')}`,

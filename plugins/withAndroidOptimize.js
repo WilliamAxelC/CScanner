@@ -1,6 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {
+  AndroidConfig,
+  withAndroidManifest,
   withAppBuildGradle,
   withDangerousMod,
   withGradleProperties,
@@ -27,6 +29,15 @@ function setGradleProperty(list, key, value) {
 }
 
 module.exports = function withAndroidOptimize(config) {
+  config = withAndroidManifest(config, (cfg) => {
+    const mainApp = AndroidConfig.Manifest.getMainApplicationOrThrow(
+      cfg.modResults,
+    );
+    mainApp.$['android:allowBackup'] = 'false';
+    mainApp.$['android:usesCleartextTraffic'] = 'false';
+    return cfg;
+  });
+
   config = withGradleProperties(config, (cfg) => {
     let props = cfg.modResults;
     props = setGradleProperty(props, 'reactNativeArchitectures', 'arm64-v8a');

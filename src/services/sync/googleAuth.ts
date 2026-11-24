@@ -6,7 +6,7 @@ import { Platform } from 'react-native';
 WebBrowser.maybeCompleteAuthSession();
 
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-const TOKEN_STORAGE_KEY = 'cscanner_google_token_v1';
+const LEGACY_TOKEN_STORAGE_KEY = 'cscanner_google_token_v1';
 
 export interface StoredGoogleToken {
   accessToken: string;
@@ -14,9 +14,20 @@ export interface StoredGoogleToken {
   email?: string;
 }
 
+// Store OAuth bearer tokens strictly in volatile process memory (never localStorage on shared web origins).
 const memoryTokenHolder: { current: StoredGoogleToken | null } = {
   current: null,
 };
+
+function clearLegacyWebToken(): void {
+  if (Platform.OS === 'web' && typeof localStorage !== 'undefined') {
+    try {
+      localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+    } catch {
+      // ignore storage access issues
+    }
+  }
+}
 
 export function getGoogleClientConfig(): {
   webClientId?: string;
@@ -37,41 +48,31 @@ export function isGoogleOAuthConfigured(): boolean {
 }
 
 export function loadStoredToken(): StoredGoogleToken | null {
+  clearLegacyWebToken();
   if (memoryTokenHolder.current) {
     if (memoryTokenHolder.current.expiresAt > Date.now() + 15_000) {
       return memoryTokenHolder.current;
     }
     memoryTokenHolder.current = null;
   }
-  if (Platform.OS === 'web' && typeof localStorage !== 'undefined') {
-    try {
-      const raw = localStorage.getItem(TOKEN_STORAGE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as StoredGoogleToken;
-      if (parsed.expiresAt > Date.now() + 15_000) {
-        memoryTokenHolder.current = parsed;
-        return parsed;
-      }
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  }
   return null;
 }
 
 export function saveStoredToken(token: StoredGoogleToken | null): void {
+  clearLegacyWebToken();
   memoryTokenHolder.current = token;
-  if (Platform.OS === 'web' && typeof localStorage !== 'undefined') {
-    try {
-      if (token) {
-        localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(token));
-      } else {
-        localStorage.removeItem(TOKEN_STORAGE_KEY);
-      }
-    } catch {
-      // ignore storage quota
-    }
+}
+
+export async function revokeGoogleToken(accessToken: string): Promise<void> {
+  if (!accessToken) return;
+  try {
+    await fetch('https://oauth2.googleapis.com/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `token=${encodeURIComponent(accessToken)}`,
+    });
+  } catch {
+    // Best-effort offline-safe revocation
   }
 }
 
@@ -127,15 +128,19 @@ export function useGoogleDriveAuth() {
   const signIn = async () => {
     if (!configured) {
       throw new Error(
-        'Google OAuth Client ID is not configured. Set EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID / EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID in .env.',
+        'Google OAuth Client ID is not configured in this build.',
       );
     }
     return promptAsync();
   };
 
   const signOut = () => {
+    const existing = memoryTokenHolder.current?.accessToken;
     saveStoredToken(null);
     setToken(null);
+    if (existing) {
+      void revokeGoogleToken(existing);
+    }
   };
 
   return {

@@ -1,17 +1,7 @@
-import { useRouter } from 'expo-router';
-import {
-  ArrowLeft,
-  Cloud,
-  LogIn,
-  LogOut,
-  Plus,
-  RefreshCw,
-  Smartphone,
-  Trash2,
-} from 'lucide-react-native';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -19,12 +9,42 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   View,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ResolvedImage } from '../src/components/ResolvedImage';
+import {
+  Accessibility,
+  ArrowLeft,
+  Bug,
+  ChevronRight,
+  Cloud,
+  CloudOff,
+  Download,
+  Info,
+  Lightbulb,
+  Lock,
+  Monitor,
+  Moon,
+  PenTool,
+  Plus,
+  RefreshCw,
+  Sun,
+  Trash2,
+} from 'lucide-react-native';
+import { ConfirmDialog } from '../src/components/ConfirmDialog';
 import { SignaturePad } from '../src/components/SignaturePad';
-import { useGoogleDriveAuth } from '../src/services/sync/googleAuth';
+import {
+  isGoogleOAuthConfigured,
+  useGoogleDriveAuth,
+} from '../src/services/sync/googleAuth';
+import {
+  DOWNLOAD_PAGE_URL,
+  getInstalledAppInfo,
+} from '../src/services/updates/updateChecker';
+import { storage } from '../src/storage';
+import type { StorageStats } from '../src/storage/types';
 import { useAppStore } from '../src/store/useAppStore';
 import { useTheme } from '../src/theme/ThemeProvider';
 import type {
@@ -33,440 +53,844 @@ import type {
   QualityPreset,
   ThemeMode,
 } from '../src/types/models';
-import { formatDateTime } from '../src/utils/format';
+
+const THEME_OPTIONS: { value: ThemeMode; label: string; icon: 'system' | 'light' | 'dark' }[] = [
+  { value: 'system', label: 'System', icon: 'system' },
+  { value: 'light', label: 'Light', icon: 'light' },
+  { value: 'dark', label: 'Dark', icon: 'dark' },
+];
+
+const FILTERS: { value: FilterPreset; label: string }[] = [
+  { value: 'original', label: 'Original' },
+  { value: 'magic', label: 'Magic' },
+  { value: 'bw', label: 'B&W' },
+  { value: 'grayscale', label: 'Gray' },
+  { value: 'lighten', label: 'Lighten' },
+];
+
+const PAGE_SIZES: { value: PageSizePreset; label: string }[] = [
+  { value: 'auto', label: 'Auto Fit' },
+  { value: 'a4', label: 'A4' },
+  { value: 'letter', label: 'Letter' },
+];
+
+const QUALITIES: { value: QualityPreset; label: string }[] = [
+  { value: 'low', label: 'Small' },
+  { value: 'medium', label: 'Balanced' },
+  { value: 'high', label: 'High' },
+];
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { colors } = useTheme();
+  const { colors, reduceMotion, scaleFont } = useTheme();
 
   const settings = useAppStore((s) => s.settings);
   const signatures = useAppStore((s) => s.signatures);
   const syncState = useAppStore((s) => s.syncState);
-  const lastSyncError = useAppStore((s) => s.lastSyncError);
   const pendingSyncCount = useAppStore((s) => s.pendingSyncCount);
+  const lastSyncError = useAppStore((s) => s.lastSyncError);
 
   const updateSettings = useAppStore((s) => s.updateSettings);
-  const triggerSync = useAppStore((s) => s.triggerSync);
   const saveNewSignature = useAppStore((s) => s.saveNewSignature);
   const deleteSignature = useAppStore((s) => s.deleteSignature);
+  const triggerSync = useAppStore((s) => s.triggerSync);
+  const clearLocalCache = useAppStore((s) => s.clearLocalCache);
+  const eraseAllData = useAppStore((s) => s.eraseAllData);
 
-  const { configured, requestReady, token, signIn, signOut } =
-    useGoogleDriveAuth();
+  const auth = useGoogleDriveAuth();
+  const oauthConfigured = isGoogleOAuthConfigured();
+  const appInfo = getInstalledAppInfo();
 
-  const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [showSigPad, setShowSigPad] = useState(false);
+  const [confirmDeleteSig, setConfirmDeleteSig] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [showEraseModal, setShowEraseModal] = useState(false);
+  const [erasePhrase, setErasePhrase] = useState('');
+  const [stats, setStats] = useState<StorageStats | null>(null);
+  const [statusNotice, setStatusNotice] = useState<string | null>(null);
+  const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
-  const handleSignIn = async () => {
-    setAuthMsg(null);
+  const loadStats = async () => {
     try {
-      const res = await signIn();
-      if (res?.type === 'success' && res.authentication?.accessToken) {
-        await triggerSync(res.authentication.accessToken);
+      if (storage.getStorageStats) {
+        setStats(await storage.getStorageStats());
       }
-    } catch (err) {
-      setAuthMsg(err instanceof Error ? err.message : 'Sign-in failed');
+    } catch {
+      // ignore stat read failure
     }
   };
+
+  useEffect(() => {
+    void loadStats();
+  }, [signatures.length, pendingSyncCount]);
+
+  useEffect(() => {
+    if (auth.token?.email && auth.token.email !== settings.googleEmail) {
+      void updateSettings({ googleEmail: auth.token.email });
+    }
+  }, [auth.token?.email, settings.googleEmail, updateSettings]);
+
+  const handleSignInAndSync = async () => {
+    setErrorNotice(null);
+    setStatusNotice(null);
+    if (!oauthConfigured) {
+      setErrorNotice(
+        'Google OAuth Client ID is not configured in this build. Documents continue working 100% offline.',
+      );
+      return;
+    }
+    try {
+      const res = await auth.signIn();
+      if (res.type === 'success' && res.authentication?.accessToken) {
+        await triggerSync(res.authentication.accessToken);
+        setStatusNotice('Google Drive sync completed.');
+      }
+    } catch (e) {
+      setErrorNotice(e instanceof Error ? e.message : 'Google sign-in failed');
+    }
+  };
+
+  const handleSyncNow = async () => {
+    setErrorNotice(null);
+    setStatusNotice(null);
+    if (!auth.token) {
+      await handleSignInAndSync();
+      return;
+    }
+    const res = await triggerSync(auth.token.accessToken);
+    if (res) {
+      setStatusNotice(`Pushed ${res.pushedDocs} and pulled ${res.pulledDocs} documents.`);
+    }
+  };
+
+  const handleSignOut = () => {
+    auth.signOut();
+    void updateSettings({ googleEmail: undefined });
+    setStatusNotice('Signed out of Google Drive.');
+  };
+
+  const handleDeleteSigRequest = (sig: { id: string; name: string }) => {
+    if (settings.confirmBeforeDelete) {
+      setConfirmDeleteSig(sig);
+    } else {
+      void deleteSignature(sig.id);
+    }
+  };
+
+  const handleClearCache = async () => {
+    const removed = await clearLocalCache();
+    setErrorNotice(null);
+    setStatusNotice(
+      removed > 0
+        ? `Removed ${removed} temporary cache file${removed === 1 ? '' : 's'}.`
+        : 'Cache is already clean.',
+    );
+    await loadStats();
+  };
+
+  const handleEraseAllConfirmed = async () => {
+    if (erasePhrase.trim().toUpperCase() !== 'ERASE') return;
+    setShowEraseModal(false);
+    setErasePhrase('');
+    auth.signOut();
+    await eraseAllData();
+    await loadStats();
+    setErrorNotice(null);
+    setStatusNotice('All local documents, signatures, and sync records have been erased.');
+  };
+
+  const accessibilitySummary = `${Math.round(settings.fontScale * 100)}% text · ${
+    settings.highContrast ? 'High Contrast' : 'Standard Contrast'
+  }${settings.reduceMotion ? ' · Reduce Motion' : ''}`;
 
   return (
     <SafeAreaView
       style={[styles.safe, { backgroundColor: colors.background }]}
+      edges={['top', 'left', 'right', 'bottom']}
     >
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <Pressable onPress={() => router.back()} style={styles.iconBtn}>
+      <View
+        style={[
+          styles.header,
+          { backgroundColor: colors.surface, borderBottomColor: colors.border },
+        ]}
+      >
+        <Pressable
+          onPress={() => router.back()}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          hitSlop={6}
+          style={[styles.backBtn, { backgroundColor: colors.surfaceMuted }]}
+        >
           <ArrowLeft size={20} color={colors.text} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>
+        <Text
+          accessibilityRole="header"
+          style={[styles.headerTitle, { color: colors.text, fontSize: scaleFont(18) }]}
+        >
           Settings
         </Text>
-        <View style={{ width: 32 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.body}>
-        {/* Google Drive Sync */}
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <View style={styles.rowBetween}>
-            <View style={styles.titleIconRow}>
-              <Cloud size={18} color={colors.primary} />
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Google Drive Sync
-              </Text>
-            </View>
-            <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-              drive.file
+      <ScrollView contentContainerStyle={styles.scroll}>
+        {statusNotice ? (
+          <View
+            style={[
+              styles.banner,
+              { backgroundColor: colors.primarySoft, borderColor: colors.primary },
+            ]}
+          >
+            <Text style={{ color: colors.primary, fontWeight: '700', fontSize: scaleFont(13) }}>
+              {statusNotice}
             </Text>
           </View>
+        ) : null}
 
-          <Text style={{ color: colors.textSecondary, fontSize: 13, lineHeight: 19 }}>
-            Offline-first sync stores PDFs visibly in My Drive/CScanner/ and lossless page metadata in My Drive/CScanner/.cscanner-meta/.
+        {errorNotice ? (
+          <View
+            accessibilityRole="alert"
+            style={[
+              styles.banner,
+              { backgroundColor: colors.dangerSoft, borderColor: colors.danger },
+            ]}
+          >
+            <Text style={{ color: colors.danger, fontWeight: '700', fontSize: scaleFont(13) }}>
+              {errorNotice}
+            </Text>
+          </View>
+        ) : null}
+
+        <Text style={[styles.sectionLabel, { color: colors.textMuted, fontSize: scaleFont(12) }]}>
+          APPEARANCE & ACCESSIBILITY
+        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <Text style={[styles.label, { color: colors.textSecondary, fontSize: scaleFont(13) }]}>
+            Theme
           </Text>
-
-          {!configured && (
-            <View
-              style={[
-                styles.infoBox,
-                { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
-              ]}
-            >
-              <Text style={{ color: colors.textSecondary, fontSize: 12, lineHeight: 17 }}>
-                OAuth client IDs are not configured in this build (.env). CScanner works 100% offline locally without an account. To enable Google Drive sync, set EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID and EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID.
-              </Text>
-            </View>
-          )}
-
-          {token ? (
-            <>
-              <Text style={{ color: colors.text, fontSize: 13, fontWeight: '600' }}>
-                Connected{token.email ? `: ${token.email}` : ''}
-              </Text>
-              <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                Pending changes: {pendingSyncCount} • Last synced:{' '}
-                {settings.lastSyncAt
-                  ? formatDateTime(settings.lastSyncAt)
-                  : 'Never'}
-              </Text>
-              {lastSyncError && (
-                <Text style={{ color: colors.danger, fontSize: 12 }}>
-                  {lastSyncError}
-                </Text>
-              )}
-              <View style={styles.btnRow}>
+          <View style={styles.chipRow}>
+            {THEME_OPTIONS.map((t) => {
+              const selected = settings.theme === t.value;
+              const Icon =
+                t.icon === 'system' ? Monitor : t.icon === 'light' ? Sun : Moon;
+              return (
                 <Pressable
-                  onPress={() => triggerSync(token.accessToken)}
-                  disabled={syncState === 'syncing'}
-                  style={[styles.primaryBtn, { backgroundColor: colors.primary }]}
-                >
-                  {syncState === 'syncing' ? (
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                  ) : (
-                    <>
-                      <RefreshCw size={15} color="#FFFFFF" />
-                      <Text style={styles.btnWhite}>Sync Now</Text>
-                    </>
-                  )}
-                </Pressable>
-                <Pressable
-                  onPress={signOut}
+                  key={t.value}
+                  onPress={() => void updateSettings({ theme: t.value })}
+                  accessibilityRole="radio"
+                  accessibilityLabel={`Theme ${t.label}`}
+                  accessibilityState={{ selected, checked: selected }}
                   style={[
-                    styles.secondaryBtn,
-                    { backgroundColor: colors.surfaceMuted },
+                    styles.chip,
+                    {
+                      backgroundColor: selected ? colors.primarySoft : colors.surfaceMuted,
+                      borderColor: selected ? colors.primary : colors.border,
+                    },
                   ]}
                 >
-                  <LogOut size={15} color={colors.text} />
-                  <Text style={{ color: colors.text, fontWeight: '600', fontSize: 13 }}>
-                    Sign Out
+                  <Icon size={15} color={selected ? colors.primary : colors.textSecondary} />
+                  <Text
+                    style={{
+                      color: selected ? colors.primary : colors.text,
+                      fontWeight: selected ? '700' : '600',
+                      fontSize: scaleFont(13),
+                    }}
+                  >
+                    {t.label}
                   </Text>
                 </Pressable>
-              </View>
-            </>
-          ) : (
-            <Pressable
-              onPress={handleSignIn}
-              disabled={!configured || !requestReady}
-              style={[
-                styles.primaryBtn,
-                {
-                  backgroundColor:
-                    configured && requestReady
-                      ? colors.primary
-                      : colors.border,
-                },
-              ]}
-            >
-              <LogIn size={16} color="#FFFFFF" />
-              <Text style={styles.btnWhite}>Connect Google Drive</Text>
-            </Pressable>
-          )}
+              );
+            })}
+          </View>
 
-          {authMsg && (
-            <Text style={{ color: colors.danger, fontSize: 12 }}>{authMsg}</Text>
-          )}
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+          <Pressable
+            onPress={() => router.push('/accessibility')}
+            accessibilityRole="button"
+            accessibilityLabel="Accessibility"
+            style={styles.navRow}
+          >
+            <View style={styles.navLeft}>
+              <View style={[styles.navIcon, { backgroundColor: colors.primarySoft }]}>
+                <Accessibility size={18} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontWeight: '700', fontSize: scaleFont(15) }}>
+                  Accessibility
+                </Text>
+                <Text style={{ color: colors.textSecondary, fontSize: scaleFont(12), marginTop: 2 }}>
+                  {accessibilitySummary}
+                </Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color={colors.textMuted} />
+          </Pressable>
         </View>
 
-        {/* Scan & Export Defaults */}
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>
-            Scan & Export Defaults
+        <Text style={[styles.sectionLabel, { color: colors.textMuted, fontSize: scaleFont(12) }]}>
+          SCAN & EXPORT DEFAULTS
+        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <Text style={[styles.label, { color: colors.textSecondary, fontSize: scaleFont(13) }]}>
+            Default Filter
           </Text>
+          <View style={styles.chipRow}>
+            {FILTERS.map((f) => {
+              const selected = settings.defaultFilter === f.value;
+              return (
+                <Pressable
+                  key={f.value}
+                  onPress={() => void updateSettings({ defaultFilter: f.value })}
+                  accessibilityRole="radio"
+                  accessibilityLabel={`Default Filter ${f.label}`}
+                  accessibilityState={{ selected, checked: selected }}
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: selected ? colors.primarySoft : colors.surfaceMuted,
+                      borderColor: selected ? colors.primary : colors.border,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={{
+                      color: selected ? colors.primary : colors.text,
+                      fontWeight: selected ? '700' : '600',
+                      fontSize: scaleFont(13),
+                    }}
+                  >
+                    {f.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
 
-          <View style={styles.rowBetween}>
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, marginTop: 10, fontSize: scaleFont(13) },
+            ]}
+          >
+            Default PDF Page Size
+          </Text>
+          <View style={styles.chipRow}>
+            {PAGE_SIZES.map((p) => {
+              const selected = settings.defaultPageSize === p.value;
+              return (
+                <Pressable
+                  key={p.value}
+                  onPress={() => void updateSettings({ defaultPageSize: p.value })}
+                  accessibilityRole="radio"
+                  accessibilityLabel={`Default Page Size ${p.label}`}
+                  accessibilityState={{ selected, checked: selected }}
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: selected ? colors.primarySoft : colors.surfaceMuted,
+                      borderColor: selected ? colors.primary : colors.border,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={{
+                      color: selected ? colors.primary : colors.text,
+                      fontWeight: selected ? '700' : '600',
+                      fontSize: scaleFont(13),
+                    }}
+                  >
+                    {p.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, marginTop: 10, fontSize: scaleFont(13) },
+            ]}
+          >
+            Export JPEG Quality
+          </Text>
+          <View style={styles.chipRow}>
+            {QUALITIES.map((q) => {
+              const selected = settings.defaultQuality === q.value;
+              return (
+                <Pressable
+                  key={q.value}
+                  onPress={() => void updateSettings({ defaultQuality: q.value })}
+                  accessibilityRole="radio"
+                  accessibilityLabel={`Export Quality ${q.label}`}
+                  accessibilityState={{ selected, checked: selected }}
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: selected ? colors.primarySoft : colors.surfaceMuted,
+                      borderColor: selected ? colors.primary : colors.border,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={{
+                      color: selected ? colors.primary : colors.text,
+                      fontWeight: selected ? '700' : '600',
+                      fontSize: scaleFont(13),
+                    }}
+                  >
+                    {q.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <View style={[styles.switchRow, { borderTopColor: colors.border }]}>
             <View style={{ flex: 1 }}>
-              <Text style={{ color: colors.text, fontWeight: '600', fontSize: 14 }}>
-                Auto-run On-Device OCR
+              <Text style={{ color: colors.text, fontWeight: '700', fontSize: scaleFont(14) }}>
+                Auto-run OCR on new scans
               </Text>
-              <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                Index text automatically after scanning pages
+              <Text style={{ color: colors.textMuted, fontSize: scaleFont(12), marginTop: 2 }}>
+                Extracts searchable text immediately in background
               </Text>
             </View>
             <Switch
               value={settings.autoOcr}
-              onValueChange={(v) => updateSettings({ autoOcr: v })}
-              trackColor={{ true: colors.primary }}
+              onValueChange={(val) => void updateSettings({ autoOcr: val })}
+              accessibilityRole="switch"
+              accessibilityLabel="Auto-run OCR on new scans"
+              accessibilityState={{ checked: settings.autoOcr }}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor="#FFFFFF"
             />
           </View>
-
-          <Text style={[styles.subLabel, { color: colors.textSecondary }]}>
-            Default Filter Preset
-          </Text>
-          <View style={styles.wrapRow}>
-            {(
-              [
-                'original',
-                'magic',
-                'bw',
-                'grayscale',
-                'lighten',
-              ] as FilterPreset[]
-            ).map((f) => (
-              <Pressable
-                key={f}
-                onPress={() => updateSettings({ defaultFilter: f })}
-                style={[
-                  styles.chip,
-                  {
-                    backgroundColor:
-                      settings.defaultFilter === f
-                        ? colors.primary
-                        : colors.surfaceMuted,
-                  },
-                ]}
-              >
-                <Text
-                  style={{
-                    color:
-                      settings.defaultFilter === f ? '#FFFFFF' : colors.text,
-                    fontSize: 12,
-                    fontWeight: '700',
-                  }}
-                >
-                  {f}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
-          <Text style={[styles.subLabel, { color: colors.textSecondary }]}>
-            Default PDF Size
-          </Text>
-          <View style={styles.wrapRow}>
-            {(['auto', 'a4', 'letter'] as PageSizePreset[]).map((sz) => (
-              <Pressable
-                key={sz}
-                onPress={() => updateSettings({ defaultPageSize: sz })}
-                style={[
-                  styles.chip,
-                  {
-                    backgroundColor:
-                      settings.defaultPageSize === sz
-                        ? colors.primary
-                        : colors.surfaceMuted,
-                  },
-                ]}
-              >
-                <Text
-                  style={{
-                    color:
-                      settings.defaultPageSize === sz ? '#FFFFFF' : colors.text,
-                    fontSize: 12,
-                    fontWeight: '700',
-                  }}
-                >
-                  {sz.toUpperCase()}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
-          <Text style={[styles.subLabel, { color: colors.textSecondary }]}>
-            Default Compression Quality
-          </Text>
-          <View style={styles.wrapRow}>
-            {(['low', 'medium', 'high'] as QualityPreset[]).map((q) => (
-              <Pressable
-                key={q}
-                onPress={() => updateSettings({ defaultQuality: q })}
-                style={[
-                  styles.chip,
-                  {
-                    backgroundColor:
-                      settings.defaultQuality === q
-                        ? colors.primary
-                        : colors.surfaceMuted,
-                  },
-                ]}
-              >
-                <Text
-                  style={{
-                    color:
-                      settings.defaultQuality === q ? '#FFFFFF' : colors.text,
-                    fontSize: 12,
-                    fontWeight: '700',
-                  }}
-                >
-                  {q}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
         </View>
 
-        {/* Appearance */}
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>
-            Appearance
-          </Text>
-          <View style={styles.wrapRow}>
-            {(['system', 'light', 'dark'] as ThemeMode[]).map((m) => (
-              <Pressable
-                key={m}
-                onPress={() => updateSettings({ theme: m })}
-                style={[
-                  styles.chip,
-                  {
-                    backgroundColor:
-                      settings.theme === m
-                        ? colors.primary
-                        : colors.surfaceMuted,
-                  },
-                ]}
-              >
-                <Text
-                  style={{
-                    color: settings.theme === m ? '#FFFFFF' : colors.text,
-                    fontSize: 12,
-                    fontWeight: '700',
-                  }}
-                >
-                  {m.charAt(0).toUpperCase() + m.slice(1)}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-
-        {/* Saved Signatures */}
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <View style={styles.rowBetween}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              Saved Signatures
+        <Text style={[styles.sectionLabel, { color: colors.textMuted, fontSize: scaleFont(12) }]}>
+          SAVED SIGNATURES ({signatures.length})
+        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <Pressable
+            onPress={() => setShowSigPad(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Add Signature"
+            style={[styles.smallBtn, { backgroundColor: colors.primarySoft, alignSelf: 'flex-start' }]}
+          >
+            <Plus size={15} color={colors.primary} />
+            <Text style={{ color: colors.primary, fontWeight: '700', fontSize: scaleFont(13) }}>
+              Add Signature
             </Text>
-            <Pressable
-              onPress={() => setShowSigPad(true)}
-              style={[styles.chip, { backgroundColor: colors.primary }]}
-            >
-              <Plus size={14} color="#FFFFFF" />
-              <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 12 }}>
-                Add
-              </Text>
-            </Pressable>
-          </View>
+          </Pressable>
 
           {signatures.length === 0 ? (
-            <Text style={{ color: colors.textMuted, fontSize: 13 }}>
-              No saved signatures yet.
-            </Text>
+            <View style={styles.emptySig}>
+              <PenTool size={22} color={colors.textMuted} />
+              <Text style={{ color: colors.textMuted, fontSize: scaleFont(13) }}>
+                No saved signatures yet
+              </Text>
+            </View>
           ) : (
             signatures.map((sig) => (
               <View
                 key={sig.id}
-                style={[
-                  styles.sigRow,
-                  { borderColor: colors.border },
-                ]}
+                style={[styles.sigRow, { borderTopColor: colors.border }]}
               >
-                <View style={styles.sigThumb}>
-                  <ResolvedImage
-                    uri={sig.pngUri}
-                    style={{ width: '100%', height: '100%' }}
-                    resizeMode="contain"
-                  />
-                </View>
-                <Text style={{ flex: 1, color: colors.text, fontWeight: '600' }}>
+                <Text style={{ color: colors.text, fontWeight: '600', fontSize: scaleFont(14) }}>
                   {sig.name}
                 </Text>
-                <Pressable onPress={() => deleteSignature(sig.id)}>
-                  <Trash2 size={17} color={colors.danger} />
+                <Pressable
+                  onPress={() => handleDeleteSigRequest({ id: sig.id, name: sig.name })}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Delete signature ${sig.name}`}
+                  style={[styles.trashBtn, { backgroundColor: colors.dangerSoft }]}
+                >
+                  <Trash2 size={16} color={colors.danger} />
                 </Pressable>
               </View>
             ))
           )}
         </View>
 
-        {Platform.OS === 'web' && (
-          <View
-            style={[
-              styles.card,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-          >
-            <View style={styles.titleIconRow}>
-              <Smartphone size={18} color={colors.primary} />
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Android App (APK)
+        <Text style={[styles.sectionLabel, { color: colors.textMuted, fontSize: scaleFont(12) }]}>
+          LOCAL STORAGE & GOOGLE DRIVE SYNC
+        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <View style={styles.syncStatusRow}>
+            {auth.token ? (
+              <Cloud size={22} color={colors.primary} />
+            ) : (
+              <CloudOff size={22} color={colors.textMuted} />
+            )}
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.text, fontWeight: '700', fontSize: scaleFont(15) }}>
+                {auth.token
+                  ? settings.googleEmail || 'Connected to Google Drive'
+                  : 'Offline Mode (Drive not connected)'}
+              </Text>
+              <Text style={{ color: colors.textSecondary, fontSize: scaleFont(12), marginTop: 2 }}>
+                {pendingSyncCount > 0
+                  ? `${pendingSyncCount} item(s) waiting in local sync queue`
+                  : settings.lastSyncAt
+                    ? `Last synced ${new Date(settings.lastSyncAt).toLocaleString()}`
+                    : 'Only app-created files under drive.file scope'}
               </Text>
             </View>
-            <Text style={{ color: colors.textSecondary, fontSize: 13, lineHeight: 19 }}>
-              Want native Google ML Kit edge detection, document scanning, and SQLite FTS5 on Android? Grab the sideloadable APK directly from the download page.
+          </View>
+
+          {lastSyncError ? (
+            <Text style={{ color: colors.danger, fontSize: scaleFont(12) }}>
+              Last sync error: {lastSyncError}
             </Text>
+          ) : null}
+
+          <View style={styles.btnRow}>
+            {auth.token ? (
+              <>
+                <Pressable
+                  onPress={() => void handleSyncNow()}
+                  disabled={syncState === 'syncing'}
+                  accessibilityRole="button"
+                  accessibilityLabel="Sync Now"
+                  style={[styles.primaryBtn, { flex: 1, backgroundColor: colors.primary }]}
+                >
+                  {syncState === 'syncing' ? (
+                    <ActivityIndicator color={colors.onPrimary} size="small" />
+                  ) : (
+                    <RefreshCw size={16} color={colors.onPrimary} />
+                  )}
+                  <Text style={{ color: colors.onPrimary, fontWeight: '700', fontSize: scaleFont(14) }}>
+                    Sync Now
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleSignOut}
+                  accessibilityRole="button"
+                  accessibilityLabel="Sign Out of Google Drive"
+                  style={[
+                    styles.secondaryBtn,
+                    { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
+                  ]}
+                >
+                  <Text style={{ color: colors.text, fontWeight: '600', fontSize: scaleFont(14) }}>
+                    Sign Out
+                  </Text>
+                </Pressable>
+              </>
+            ) : (
+              <Pressable
+                onPress={() => void handleSignInAndSync()}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  oauthConfigured ? 'Sign in with Google Drive' : 'Google OAuth Not Configured'
+                }
+                style={[
+                  styles.primaryBtn,
+                  {
+                    flex: 1,
+                    backgroundColor: oauthConfigured ? colors.primary : colors.surfaceMuted,
+                    borderWidth: oauthConfigured ? 0 : 1,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                <Cloud
+                  size={16}
+                  color={oauthConfigured ? colors.onPrimary : colors.textSecondary}
+                />
+                <Text
+                  style={{
+                    color: oauthConfigured ? colors.onPrimary : colors.text,
+                    fontWeight: '700',
+                    fontSize: scaleFont(14),
+                  }}
+                >
+                  {oauthConfigured
+                    ? 'Sign in with Google Drive'
+                    : 'Google OAuth Not Configured'}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+          <Text style={{ color: colors.textSecondary, fontSize: scaleFont(12) }}>
+            {stats
+              ? `Local Vault: ${stats.docCount} documents · ${stats.pageCount} pages · ${stats.signatureCount} signatures`
+              : 'Calculating local vault usage...'}
+          </Text>
+          <View style={styles.btnRow}>
+            <Pressable
+              onPress={() => void handleClearCache()}
+              accessibilityRole="button"
+              accessibilityLabel="Clear Cache"
+              style={[
+                styles.secondaryBtn,
+                { flex: 1, backgroundColor: colors.surfaceMuted, borderColor: colors.border },
+              ]}
+            >
+              <Text style={{ color: colors.text, fontWeight: '600', fontSize: scaleFont(13) }}>
+                Clear Cache
+              </Text>
+            </Pressable>
             <Pressable
               onPress={() => {
-                const base = (process.env.EXPO_PUBLIC_BASE_URL || '').replace(
-                  /\/+$/,
-                  '',
-                );
-                if (typeof window !== 'undefined') {
-                  window.location.assign(`${base}/download/`);
-                }
+                setErasePhrase('');
+                setShowEraseModal(true);
               }}
-              style={[styles.primaryBtn, { backgroundColor: colors.primary }]}
+              accessibilityRole="button"
+              accessibilityLabel="Erase All Data"
+              style={[
+                styles.secondaryBtn,
+                { flex: 1, backgroundColor: colors.dangerSoft, borderColor: colors.danger },
+              ]}
             >
-              <Smartphone size={16} color="#FFFFFF" />
-              <Text style={styles.btnWhite}>Download Android APK</Text>
+              <Trash2 size={15} color={colors.danger} />
+              <Text style={{ color: colors.danger, fontWeight: '700', fontSize: scaleFont(13) }}>
+                Erase All Data
+              </Text>
             </Pressable>
           </View>
-        )}
+        </View>
+
+        <Text style={[styles.sectionLabel, { color: colors.textMuted, fontSize: scaleFont(12) }]}>
+          SUPPORT & FEEDBACK
+        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <Pressable
+            onPress={() => router.push({ pathname: '/report', params: { kind: 'bug' } })}
+            accessibilityRole="button"
+            accessibilityLabel="Report a Bug"
+            style={styles.navRow}
+          >
+            <View style={styles.navLeft}>
+              <View style={[styles.navIcon, { backgroundColor: colors.primarySoft }]}>
+                <Bug size={18} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontWeight: '700', fontSize: scaleFont(15) }}>
+                  Report a Bug
+                </Text>
+                <Text style={{ color: colors.textSecondary, fontSize: scaleFont(12) }}>
+                  Pre-filled GitHub report with sanitized diagnostics
+                </Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color={colors.textMuted} />
+          </Pressable>
+
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+          <Pressable
+            onPress={() => router.push({ pathname: '/report', params: { kind: 'feature' } })}
+            accessibilityRole="button"
+            accessibilityLabel="Request a Feature"
+            style={styles.navRow}
+          >
+            <View style={styles.navLeft}>
+              <View style={[styles.navIcon, { backgroundColor: colors.primarySoft }]}>
+                <Lightbulb size={18} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontWeight: '700', fontSize: scaleFont(15) }}>
+                  Request a Feature
+                </Text>
+                <Text style={{ color: colors.textSecondary, fontSize: scaleFont(12) }}>
+                  Suggest workflow improvements or new export tools
+                </Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color={colors.textMuted} />
+          </Pressable>
+
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+          <Pressable
+            onPress={() => router.push('/privacy')}
+            accessibilityRole="button"
+            accessibilityLabel="Privacy What Leaves Your Device"
+            style={styles.navRow}
+          >
+            <View style={styles.navLeft}>
+              <View style={[styles.navIcon, { backgroundColor: colors.primarySoft }]}>
+                <Lock size={18} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontWeight: '700', fontSize: scaleFont(15) }}>
+                  Privacy: What Leaves Your Device
+                </Text>
+                <Text style={{ color: colors.textSecondary, fontSize: scaleFont(12) }}>
+                  Full transparency of every optional network call
+                </Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color={colors.textMuted} />
+          </Pressable>
+        </View>
+
+        <Text style={[styles.sectionLabel, { color: colors.textMuted, fontSize: scaleFont(12) }]}>
+          ABOUT
+        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <Pressable
+            onPress={() => router.push('/app-info')}
+            accessibilityRole="button"
+            accessibilityLabel="App Info"
+            style={styles.navRow}
+          >
+            <View style={styles.navLeft}>
+              <View style={[styles.navIcon, { backgroundColor: colors.primarySoft }]}>
+                <Info size={18} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontWeight: '700', fontSize: scaleFont(15) }}>
+                  App Info
+                </Text>
+                <Text style={{ color: colors.textSecondary, fontSize: scaleFont(12) }}>
+                  Version {appInfo.version} (build {appInfo.versionCode}) · Updates & Licenses
+                </Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color={colors.textMuted} />
+          </Pressable>
+
+          {Platform.OS === 'web' ? (
+            <>
+              <View style={[styles.divider, { backgroundColor: colors.border }]} />
+              <Pressable
+                onPress={() => void Linking.openURL(DOWNLOAD_PAGE_URL)}
+                accessibilityRole="button"
+                accessibilityLabel="Download Android APK"
+                style={[styles.primaryBtn, { backgroundColor: colors.primary }]}
+              >
+                <Download size={16} color={colors.onPrimary} />
+                <Text style={{ color: colors.onPrimary, fontWeight: '700', fontSize: scaleFont(14) }}>
+                  Download Android APK
+                </Text>
+              </Pressable>
+            </>
+          ) : null}
+        </View>
       </ScrollView>
 
       <Modal
         visible={showSigPad}
         transparent
-        animationType="fade"
+        animationType={reduceMotion ? 'none' : 'fade'}
         onRequestClose={() => setShowSigPad(false)}
       >
-        <View
-          style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]}
-        >
-          <View style={{ width: '100%', maxWidth: 420 }}>
+        <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
             <SignaturePad
               onCancel={() => setShowSigPad(false)}
               onSave={async (res) => {
-                await saveNewSignature(res);
+                await saveNewSignature({
+                  name: `Signature ${signatures.length + 1}`,
+                  svgPathData: res.svgPathData,
+                  pngBytes: res.pngBytes,
+                  width: res.width,
+                  height: res.height,
+                });
                 setShowSigPad(false);
               }}
             />
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={showEraseModal}
+        transparent
+        animationType={reduceMotion ? 'none' : 'fade'}
+        onRequestClose={() => setShowEraseModal(false)}
+      >
+        <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
+          <View
+            style={[
+              styles.eraseCard,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+            <Text
+              accessibilityRole="header"
+              style={{ color: colors.danger, fontWeight: '800', fontSize: scaleFont(17) }}
+            >
+              Erase All Local Data?
+            </Text>
+            <Text style={{ color: colors.textSecondary, fontSize: scaleFont(14), lineHeight: 20 }}>
+              This permanently removes all folders, scanned documents, pages, saved signatures, and
+              sync queue records from this device. Type ERASE below to confirm.
+            </Text>
+            <TextInput
+              value={erasePhrase}
+              onChangeText={setErasePhrase}
+              placeholder="Type ERASE"
+              placeholderTextColor={colors.textMuted}
+              autoCapitalize="characters"
+              accessibilityLabel="Confirmation phrase"
+              style={[
+                styles.eraseInput,
+                {
+                  color: colors.text,
+                  backgroundColor: colors.surfaceMuted,
+                  borderColor: colors.border,
+                  fontSize: scaleFont(14),
+                },
+              ]}
+            />
+            <View style={styles.btnRow}>
+              <Pressable
+                onPress={() => setShowEraseModal(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel Erase"
+                style={[
+                  styles.secondaryBtn,
+                  { flex: 1, backgroundColor: colors.surfaceMuted, borderColor: colors.border },
+                ]}
+              >
+                <Text style={{ color: colors.text, fontWeight: '600', fontSize: scaleFont(14) }}>
+                  Cancel
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void handleEraseAllConfirmed()}
+                disabled={erasePhrase.trim().toUpperCase() !== 'ERASE'}
+                accessibilityRole="button"
+                accessibilityLabel="Confirm Erase All Data"
+                style={[
+                  styles.primaryBtn,
+                  {
+                    flex: 1,
+                    backgroundColor: colors.danger,
+                    opacity: erasePhrase.trim().toUpperCase() === 'ERASE' ? 1 : 0.45,
+                  },
+                ]}
+              >
+                <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: scaleFont(14) }}>
+                  Erase Everything
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <ConfirmDialog
+        visible={Boolean(confirmDeleteSig)}
+        title="Delete Saved Signature?"
+        message={`Remove "${confirmDeleteSig?.name ?? ''}" from saved signatures?`}
+        confirmLabel="Delete"
+        destructive
+        onCancel={() => setConfirmDeleteSig(null)}
+        onConfirm={() => {
+          if (confirmDeleteSig) {
+            void deleteSignature(confirmDeleteSig.id);
+          }
+          setConfirmDeleteSig(null);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -476,20 +900,30 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderBottomWidth: 1,
   },
-  iconBtn: { padding: 6 },
-  headerTitle: { fontSize: 17, fontWeight: '700' },
-  body: {
-    padding: 16,
-    gap: 14,
-    maxWidth: 680,
-    width: '100%',
-    alignSelf: 'center',
-    paddingBottom: 40,
+  backBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: { fontWeight: '800' },
+  scroll: { padding: 16, gap: 12, paddingBottom: 40 },
+  sectionLabel: {
+    fontWeight: '700',
+    letterSpacing: 0.7,
+    marginTop: 6,
+    marginLeft: 4,
+  },
+  banner: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
   },
   card: {
     borderRadius: 14,
@@ -497,68 +931,101 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 10,
   },
-  rowBetween: {
+  label: { fontWeight: '600' },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  switchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
+    borderTopWidth: 1,
+    paddingTop: 12,
+    marginTop: 6,
+    minHeight: 48,
   },
-  titleIconRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  sectionTitle: { fontSize: 16, fontWeight: '700' },
-  subLabel: { fontSize: 12, fontWeight: '700', marginTop: 4 },
-  wrapRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: {
+  smallBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 13,
-    paddingVertical: 8,
+    gap: 6,
+    minHeight: 44,
+    paddingHorizontal: 12,
     borderRadius: 10,
   },
-  infoBox: {
-    padding: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-  },
-  btnRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
-  primaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    paddingHorizontal: 16,
-    paddingVertical: 11,
-    borderRadius: 10,
-  },
-  secondaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    borderRadius: 10,
-  },
-  btnWhite: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+  emptySig: { alignItems: 'center', paddingVertical: 14, gap: 6 },
   sigRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingVertical: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    justifyContent: 'space-between',
+    borderTopWidth: 1,
+    paddingTop: 10,
+    minHeight: 48,
   },
-  sigThumb: {
-    width: 80,
-    height: 36,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 6,
-    overflow: 'hidden',
-    padding: 2,
-  },
-  modalBackdrop: {
-    flex: 1,
-    justifyContent: 'center',
+  trashBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
     alignItems: 'center',
-    padding: 20,
+    justifyContent: 'center',
+  },
+  syncStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  btnRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  primaryBtn: {
+    minHeight: 48,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  secondaryBtn: {
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  navRow: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  navLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
+  navIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  divider: { height: 1, marginVertical: 4 },
+  modalOverlay: { flex: 1, justifyContent: 'center', padding: 16 },
+  modalCard: { borderRadius: 18, padding: 16, maxHeight: '85%' },
+  eraseCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 18,
+    gap: 12,
+  },
+  eraseInput: {
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
   },
 });

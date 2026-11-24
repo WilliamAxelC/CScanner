@@ -26,9 +26,9 @@ function copyDir(src, dest) {
   }
 }
 
-// 1. Export Expo Web single-page bundle (clean dist first)
+// 1. Export Expo Web single-page bundle (clean dist & Metro cache so app.json manifest changes apply)
 fs.rmSync(distDir, { recursive: true, force: true });
-run('npx expo export --platform web');
+run('npx expo export --platform web --clear');
 
 // 2. Ensure public/ manifest and icons exist inside dist/
 copyDir(publicDir, distDir);
@@ -52,7 +52,20 @@ if (fs.existsSync(manifestPath)) {
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
 }
 
-// 4. Inject manifest link, theme-color, favicon subpath fix, and service worker registration into dist/index.html
+// 4. Write external service-worker bootstrapper so strict CSP forbids inline scripts
+const swUrl = `${basePath}/sw.js`;
+const swScope = basePath ? `${basePath}/` : '/';
+const swRegisterJs = `if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('${swUrl}', { scope: '${swScope}' }).catch(function (err) {
+      console.warn('SW registration failed:', err);
+    });
+  });
+}
+`;
+fs.writeFileSync(path.join(distDir, 'sw-register.js'), swRegisterJs, 'utf8');
+
+// 5. Inject manifest link, theme-color, favicon subpath fix, and external sw-register script
 const indexPath = path.join(distDir, 'index.html');
 if (!fs.existsSync(indexPath)) {
   throw new Error('dist/index.html not found after expo export');
@@ -68,8 +81,7 @@ if (basePath) {
 
 const manifestUrl = `${basePath}/manifest.json`;
 const icon192Url = `${basePath}/icons/icon-192.png`;
-const swUrl = `${basePath}/sw.js`;
-const swScope = basePath ? `${basePath}/` : '/';
+const swRegisterUrl = `${basePath}/sw-register.js`;
 
 if (!html.includes('rel="manifest"')) {
   html = html.replace(
@@ -77,22 +89,19 @@ if (!html.includes('rel="manifest"')) {
     `  <link rel="manifest" href="${manifestUrl}" />\n  <meta name="theme-color" content="#0D9488" />\n  <link rel="apple-touch-icon" href="${icon192Url}" />\n</head>`,
   );
 }
-if (!html.includes('serviceWorker')) {
+if (!html.includes('sw-register.js')) {
   html = html.replace(
     '</body>',
-    `  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', function () {
-        navigator.serviceWorker.register('${swUrl}', { scope: '${swScope}' }).catch(function (err) {
-          console.warn('SW registration failed:', err);
-        });
-      });
-    }
-  </script>\n</body>`,
+    `  <script src="${swRegisterUrl}" defer></script>\n</body>`,
   );
 }
 fs.writeFileSync(indexPath, html, 'utf8');
 
-// 5. Generate offline Workbox service worker
+// 6. Generate offline Workbox service worker and strip source maps from deploy bundle
 run('npx workbox-cli generateSW workbox-config.js');
+for (const entry of fs.readdirSync(distDir)) {
+  if (entry.endsWith('.map')) {
+    fs.rmSync(path.join(distDir, entry), { force: true });
+  }
+}
 console.log(`PWA build complete in dist/ (basePath="${basePath || '/'}")`);

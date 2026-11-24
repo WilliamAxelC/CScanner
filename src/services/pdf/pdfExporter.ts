@@ -1,5 +1,12 @@
 import { degrees, PDFDocument, rgb, StandardFonts } from '@cantoo/pdf-lib';
-import type { Annotation, ExportOptions, OcrBlock, PageSizePreset } from '../../types/models';
+import type {
+  Annotation,
+  ExportOptions,
+  OcrBlock,
+  PageSizePreset,
+  RedactAnnotation,
+} from '../../types/models';
+import { generateId } from '../../utils/ids';
 
 export interface PdfPageInput {
   jpegBytes: Uint8Array;
@@ -14,6 +21,34 @@ const A4_WIDTH = 595.28;
 const A4_HEIGHT = 841.89;
 const LETTER_WIDTH = 612;
 const LETTER_HEIGHT = 792;
+
+/**
+ * Filters out searchable OCR blocks whose bounding boxes overlap any redaction annotation.
+ */
+export function filterRedactedOcrBlocks(
+  blocks: OcrBlock[] | undefined,
+  annotations: Annotation[] | undefined,
+): OcrBlock[] {
+  if (!blocks?.length) return [];
+  const redacts = (annotations ?? []).filter(
+    (a): a is RedactAnnotation => a.type === 'redact',
+  );
+  if (redacts.length === 0) return blocks;
+
+  return blocks.filter((block) => {
+    const bx0 = block.x;
+    const by0 = block.y;
+    const bx1 = block.x + block.width;
+    const by1 = block.y + block.height;
+    return !redacts.some((r) => {
+      const rx0 = r.x;
+      const ry0 = r.y;
+      const rx1 = r.x + r.width;
+      const ry1 = r.y + r.height;
+      return !(bx1 <= rx0 || bx0 >= rx1 || by1 <= ry0 || by0 >= ry1);
+    });
+  });
+}
 
 /**
  * Replaces characters outside WinAnsi Latin-1 range so StandardFonts.Helvetica never throws.
@@ -200,9 +235,13 @@ export async function buildPdfBytes(
       }
     }
 
-    // 3. Invisible searchable OCR text layer
-    if (options.includeOcrLayer && pageInput.ocrBlocks?.length) {
-      for (const block of pageInput.ocrBlocks) {
+    // 3. Invisible searchable OCR text layer (excluding redacted regions)
+    const searchableBlocks = filterRedactedOcrBlocks(
+      pageInput.ocrBlocks,
+      pageInput.annotations,
+    );
+    if (options.includeOcrLayer && searchableBlocks.length > 0) {
+      for (const block of searchableBlocks) {
         const clean = sanitizeWinAnsi(block.text).trim();
         if (!clean) continue;
 
@@ -230,11 +269,13 @@ export async function buildPdfBytes(
     }
   }
 
-  const pw = options.password?.trim();
-  if (pw) {
+  if (options.password !== undefined) {
+    if (!options.password.trim()) {
+      throw new Error('PDF password cannot be empty or blank whitespace.');
+    }
     await pdfDoc.encrypt({
-      userPassword: pw,
-      ownerPassword: pw,
+      userPassword: options.password,
+      ownerPassword: `${generateId()}-${generateId()}`,
       permissions: {
         printing: 'highResolution',
         modifying: false,

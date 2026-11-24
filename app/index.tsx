@@ -1,5 +1,6 @@
 import { useRouter } from 'expo-router';
 import {
+  ArrowUpCircle,
   Camera,
   Cloud,
   CloudOff,
@@ -33,14 +34,21 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { DocumentCard } from '../src/components/DocumentCard';
 import { ScanFab } from '../src/components/ScanFab';
 import { loadStoredToken } from '../src/services/sync/googleAuth';
+import { useAppUpdateStore } from '../src/services/updates/appUpdate';
+import {
+  selectShowUpdateBanner,
+  useUpdateStore,
+} from '../src/services/updates/updateChecker';
 import { useAppStore } from '../src/store/useAppStore';
 import { useTheme } from '../src/theme/ThemeProvider';
+import { ConfirmDialog } from '../src/components/ConfirmDialog';
+import { getPagesForDoc } from '../src/utils/security';
 import type { Document } from '../src/types/models';
 
 export default function LibraryScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
-  const { colors, isDark } = useTheme();
+  const { colors, isDark, reduceMotion } = useTheme();
 
   const folders = useAppStore((s) => s.folders);
   const documents = useAppStore((s) => s.documents);
@@ -64,6 +72,11 @@ export default function LibraryScreen() {
   const updateSettings = useAppStore((s) => s.updateSettings);
   const triggerSync = useAppStore((s) => s.triggerSync);
 
+  const showUpdateBanner = useUpdateStore(selectShowUpdateBanner);
+  const latestVersion = useUpdateStore((s) => s.latest);
+  const dismissUpdate = useUpdateStore((s) => s.dismiss);
+  const openUpdateSheet = useAppUpdateStore((s) => s.openSheet);
+
   const [newFolderModal, setNewFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
 
@@ -73,6 +86,14 @@ export default function LibraryScreen() {
   const [modalMode, setModalMode] = useState<
     'actions' | 'rename' | 'move' | 'tags'
   >('actions');
+  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+  const [confirmDeleteFolder, setConfirmDeleteFolder] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   const allTags = useMemo(() => {
     const set = new Set<string>();
@@ -283,6 +304,45 @@ export default function LibraryScreen() {
         </Pressable>
       </View>
 
+      {showUpdateBanner && latestVersion ? (
+        <View
+          testID="update-banner"
+          style={[
+            styles.updateBanner,
+            { backgroundColor: colors.primarySoft, borderColor: colors.primary },
+          ]}
+        >
+          <Pressable
+            onPress={() => openUpdateSheet(latestVersion)}
+            accessibilityRole="button"
+            accessibilityLabel={`CScanner ${latestVersion.version} is available. Update`}
+            style={styles.updateBannerBody}
+          >
+            <ArrowUpCircle size={18} color={colors.primary} />
+            <Text
+              style={{
+                color: colors.primary,
+                fontWeight: '700',
+                fontSize: 13,
+                flex: 1,
+              }}
+              numberOfLines={1}
+            >
+              CScanner {latestVersion.version} is available · Update
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={dismissUpdate}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss update notice"
+            style={styles.updateDismissBtn}
+          >
+            <X size={16} color={colors.primary} />
+          </Pressable>
+        </View>
+      ) : null}
+
       {/* Folder & Tag Chips */}
       <View style={styles.chipsSection}>
         <ScrollView
@@ -302,7 +362,11 @@ export default function LibraryScreen() {
                 onPress={() => setSelectedFolderId(item.id)}
                 onLongPress={() => {
                   if (item.id !== 'all' && item.id !== 'unfiled') {
-                    deleteFolder(item.id);
+                    if (settings.confirmBeforeDelete) {
+                      setConfirmDeleteFolder({ id: item.id, name: item.label });
+                    } else {
+                      deleteFolder(item.id);
+                    }
                   }
                 }}
                 style={[
@@ -403,7 +467,9 @@ export default function LibraryScreen() {
             {!searchQuery.trim() && (
               <View style={styles.emptyBtns}>
                 <Pressable
-                  onPress={() => router.push('/scan')}
+                  onPress={() =>
+                    router.push({ pathname: '/scan', params: { fromApp: '1' } })
+                  }
                   style={[
                     styles.emptyPrimaryBtn,
                     { backgroundColor: colors.primary },
@@ -414,7 +480,10 @@ export default function LibraryScreen() {
                 </Pressable>
                 <Pressable
                   onPress={() =>
-                    router.push({ pathname: '/scan', params: { mode: 'import' } })
+                    router.push({
+                      pathname: '/scan',
+                      params: { mode: 'import', fromApp: '1' },
+                    })
                   }
                   style={[
                     styles.emptySecondaryBtn,
@@ -444,7 +513,7 @@ export default function LibraryScreen() {
             numColumns > 1 ? { gap: 12 } : undefined
           }
           renderItem={({ item }) => {
-            const pages = pagesByDoc[item.id] ?? [];
+            const pages = getPagesForDoc(pagesByDoc, item.id);
             return (
               <View
                 style={
@@ -471,9 +540,14 @@ export default function LibraryScreen() {
 
       {/* Floating Scan FAB */}
       <ScanFab
-        onScan={() => router.push('/scan')}
+        onScan={() =>
+          router.push({ pathname: '/scan', params: { fromApp: '1' } })
+        }
         onImport={() =>
-          router.push({ pathname: '/scan', params: { mode: 'import' } })
+          router.push({
+            pathname: '/scan',
+            params: { mode: 'import', fromApp: '1' },
+          })
         }
         onIdCard={() => router.push('/id-card')}
       />
@@ -482,7 +556,7 @@ export default function LibraryScreen() {
       <Modal
         visible={newFolderModal}
         transparent
-        animationType="fade"
+        animationType={reduceMotion ? 'none' : 'fade'}
         onRequestClose={() => setNewFolderModal(false)}
       >
         <View
@@ -541,7 +615,7 @@ export default function LibraryScreen() {
       <Modal
         visible={Boolean(menuDoc)}
         transparent
-        animationType="fade"
+        animationType={reduceMotion ? 'none' : 'fade'}
         onRequestClose={() => setMenuDoc(null)}
       >
         <Pressable
@@ -612,8 +686,13 @@ export default function LibraryScreen() {
                 <Pressable
                   onPress={async () => {
                     const id = menuDoc.id;
+                    const title = menuDoc.title;
                     setMenuDoc(null);
-                    await deleteDocument(id);
+                    if (settings.confirmBeforeDelete) {
+                      setConfirmDeleteDoc({ id, title });
+                    } else {
+                      await deleteDocument(id);
+                    }
                   }}
                   style={[styles.sheetRow, { borderBottomWidth: 0 }]}
                 >
@@ -787,6 +866,36 @@ export default function LibraryScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <ConfirmDialog
+        visible={Boolean(confirmDeleteDoc)}
+        title="Delete Document?"
+        message={`Delete "${confirmDeleteDoc?.title ?? ''}" and all of its scanned pages from this device?`}
+        confirmLabel="Delete"
+        destructive
+        onCancel={() => setConfirmDeleteDoc(null)}
+        onConfirm={() => {
+          if (confirmDeleteDoc) {
+            void deleteDocument(confirmDeleteDoc.id);
+          }
+          setConfirmDeleteDoc(null);
+        }}
+      />
+
+      <ConfirmDialog
+        visible={Boolean(confirmDeleteFolder)}
+        title="Delete Folder?"
+        message={`Remove folder "${confirmDeleteFolder?.name ?? ''}"? Documents inside will move to Unfiled.`}
+        confirmLabel="Delete Folder"
+        destructive
+        onCancel={() => setConfirmDeleteFolder(null)}
+        onConfirm={() => {
+          if (confirmDeleteFolder) {
+            void deleteFolder(confirmDeleteFolder.id);
+          }
+          setConfirmDeleteFolder(null);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -847,8 +956,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   iconButton: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     borderWidth: 1,
     alignItems: 'center',
@@ -860,6 +969,30 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 16,
     marginBottom: 10,
+  },
+  updateBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingLeft: 12,
+    paddingRight: 6,
+    minHeight: 44,
+  },
+  updateBannerBody: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+  },
+  updateDismissBtn: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   searchBox: {
     flex: 1,

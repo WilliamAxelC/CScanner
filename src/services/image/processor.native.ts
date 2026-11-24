@@ -4,9 +4,11 @@ import {
   composeIdCardNative,
   isNativeScannerAvailable,
   processImageNative,
+  redactImageNative,
 } from 'cscanner-mlkit';
-import type { FilterPreset, Quad } from '../../types/models';
+import type { FilterPreset, Quad, RedactAnnotation } from '../../types/models';
 import { generateId } from '../../utils/ids';
+import { assertSafeAssetId } from '../../utils/security';
 import { DEFAULT_QUAD } from './autoEdge';
 
 export interface ProcessImageParams {
@@ -27,11 +29,12 @@ export interface ProcessedImageResult {
 }
 
 function getManagedOutputUri(id: string): string {
+  const safeId = assertSafeAssetId(id);
   const dir = new Directory(Paths.document, 'cscanner', 'images');
   if (!dir.exists) {
     dir.create({ intermediates: true, idempotent: true });
   }
-  return new File(dir, `${id}.jpg`).uri;
+  return new File(dir, `${safeId}.jpg`).uri;
 }
 
 export async function autoDetectQuadFromUri(_uri: string): Promise<Quad> {
@@ -100,7 +103,30 @@ export async function reencodeJpegForExport(
   uri: string,
   maxWidth: number,
   quality: number,
+  redactions?: RedactAnnotation[],
 ): Promise<{ bytes: Uint8Array; width: number; height: number }> {
+  if (redactions?.length && isNativeScannerAvailable()) {
+    const tempFile = new File(Paths.cache, `redact_${generateId()}.jpg`);
+    try {
+      const redacted = await redactImageNative({
+        inputUri: uri,
+        outputUri: tempFile.uri,
+        redactions,
+        maxDim: maxWidth,
+        quality: Math.round(Math.max(30, Math.min(100, quality * 100))),
+      });
+      const outFile = new File(redacted.uri);
+      const bytes = await outFile.bytes();
+      return { bytes, width: redacted.width, height: redacted.height };
+    } finally {
+      try {
+        if (tempFile.exists) tempFile.delete();
+      } catch {
+        // ignore temp cleanup failure
+      }
+    }
+  }
+
   const res = await manipulateAsync(
     uri,
     [{ resize: { width: maxWidth } }],

@@ -1,5 +1,9 @@
 import type { StorageAdapter } from '../../storage/types';
 import type { Document, Folder, Page } from '../../types/models';
+import {
+  escapeDriveQueryValue,
+  validateRemoteManifest,
+} from '../../utils/security';
 import type { DriveClient } from './driveApi';
 
 export interface RemotePageManifest {
@@ -175,6 +179,12 @@ export class SyncEngine {
           }
 
           if (doc.deletedAt !== null) {
+            const pages = await this.storage.listPages(doc.id);
+            for (const p of pages) {
+              if (p.driveImageFileId) {
+                await this.drive.trashFile(p.driveImageFileId).catch(() => {});
+              }
+            }
             if (doc.driveFileId) {
               await this.drive.trashFile(doc.driveFileId).catch(() => {});
             }
@@ -275,8 +285,10 @@ export class SyncEngine {
           const manifestBytes = encoder.encode(JSON.stringify(manifest));
           let metaId = doc.driveMetaFileId;
           if (!metaId) {
+            const escapedName = escapeDriveQueryValue(`doc-${doc.id}.json`);
+            const escapedParent = escapeDriveQueryValue(metaFolderId);
             const existingMeta = await this.drive.listFiles(
-              `name = 'doc-${doc.id}.json' and '${metaFolderId}' in parents and trashed = false`,
+              `name = '${escapedName}' and '${escapedParent}' in parents and trashed = false`,
             );
             if (existingMeta.length > 0) metaId = existingMeta[0].id;
           }
@@ -319,12 +331,13 @@ export class SyncEngine {
   ): Promise<void> {
     const decoder = new TextDecoder();
     const genId = this.deps.generateId ?? defaultId;
+    const escapedParent = escapeDriveQueryValue(metaFolderId);
 
     const remoteFiles = await this.drive.listFiles(
-      `'${metaFolderId}' in parents and mimeType = 'application/json' and trashed = false`,
+      `'${escapedParent}' in parents and mimeType = 'application/json' and trashed = false`,
     );
-    const docManifestFiles = remoteFiles.filter((f) =>
-      f.name.startsWith('doc-') && f.name.endsWith('.json'),
+    const docManifestFiles = remoteFiles.filter(
+      (f) => f.name.startsWith('doc-') && f.name.endsWith('.json'),
     );
 
     const localDocs = await this.storage.listDocuments({ includeDeleted: true });
@@ -341,7 +354,11 @@ export class SyncEngine {
     for (const file of docManifestFiles) {
       try {
         const docIdFromName = file.name.slice(4, -5);
-        const existingLocal = localDocMap.get(docIdFromName);
+        const rawBytes = await this.drive.downloadBytes(file.id);
+        const parsed = JSON.parse(decoder.decode(rawBytes)) as unknown;
+        const manifest = validateRemoteManifest(parsed, docIdFromName);
+
+        const existingLocal = localDocMap.get(manifest.id);
         const remoteModMs = file.modifiedTime
           ? Date.parse(file.modifiedTime)
           : Infinity;
@@ -355,11 +372,6 @@ export class SyncEngine {
         ) {
           continue;
         }
-
-        const rawBytes = await this.drive.downloadBytes(file.id);
-        const manifest = JSON.parse(
-          decoder.decode(rawBytes),
-        ) as RemoteDocumentManifest;
 
         // Ensure remote folder exists locally if referenced
         if (
@@ -379,7 +391,7 @@ export class SyncEngine {
         }
 
         if (!existingLocal) {
-          await this.materializeRemoteDoc(manifest, file.id, manifest.id, false);
+          await this.materializeRemoteDoc(manifest, file.id, manifest.id, false, genId);
           result.pulledDocs++;
           continue;
         }
@@ -388,7 +400,7 @@ export class SyncEngine {
           existingLocal.syncStatus === 'synced' &&
           manifest.updatedAt > existingLocal.updatedAt
         ) {
-          await this.materializeRemoteDoc(manifest, file.id, manifest.id, false);
+          await this.materializeRemoteDoc(manifest, file.id, manifest.id, false, genId);
           result.pulledDocs++;
           continue;
         }
@@ -411,6 +423,7 @@ export class SyncEngine {
             undefined,
             conflictDocId,
             true,
+            genId,
           );
           result.conflicts++;
         }
@@ -427,36 +440,45 @@ export class SyncEngine {
     driveMetaFileId: string | undefined,
     targetDocId: string,
     asConflictCopy: boolean,
+    genId: () => string,
   ): Promise<void> {
     const existingPages = await this.storage.listPages(targetDocId);
     const existingById = new Map(existingPages.map((p) => [p.id, p]));
     const nextPageIds: string[] = [];
 
     for (const rp of manifest.pages) {
-      const existingPage = existingById.get(rp.id);
+      let pageId = rp.id;
+      let existingPage = existingById.get(pageId);
+
+      // Prevent remote manifest from overwriting a page primary key owned by another local document
+      if (!existingPage) {
+        const collision = await this.storage.getPage(pageId);
+        if (collision && collision.documentId !== targetDocId) {
+          pageId = genId();
+          existingPage = undefined;
+        }
+      }
+
       let originalUri = existingPage?.originalUri ?? '';
 
       if (!originalUri && rp.driveImageFileId) {
         const imgBytes = await this.drive.downloadBytes(rp.driveImageFileId);
         originalUri = await this.storage.saveImageBytes(
-          `orig_${rp.id}`,
+          `orig_${pageId}`,
           imgBytes,
           'jpg',
         );
       }
 
-      let processedUri = existingPage?.processedUri || originalUri;
-      let width = rp.width;
-      let height = rp.height;
-
+      const processedUri = existingPage?.processedUri || originalUri;
       const draftPage: Page = {
-        id: rp.id,
+        id: pageId,
         documentId: targetDocId,
         orderIndex: rp.orderIndex,
         originalUri,
         processedUri,
-        width,
-        height,
+        width: rp.width,
+        height: rp.height,
         quad: rp.quad,
         rotation: rp.rotation,
         filter: rp.filter,
@@ -483,6 +505,10 @@ export class SyncEngine {
     // Remove pages deleted remotely
     for (const oldPage of existingPages) {
       if (!nextPageIds.includes(oldPage.id)) {
+        await this.storage.deleteImage(oldPage.originalUri);
+        if (oldPage.processedUri !== oldPage.originalUri) {
+          await this.storage.deleteImage(oldPage.processedUri);
+        }
         await this.storage.deletePage(oldPage.id);
       }
     }

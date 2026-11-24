@@ -15,6 +15,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '../../../src/store/useAppStore';
 import { useTheme } from '../../../src/theme/ThemeProvider';
 
+import { copyTextToClipboard } from '../../../src/services/feedback/reportBuilder';
+import { getPagesForDoc } from '../../../src/utils/security';
+
 export default function OcrScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -26,7 +29,7 @@ export default function OcrScreen() {
   const updatePageOcrText = useAppStore((s) => s.updatePageOcrText);
 
   const doc = documents.find((d) => d.id === id);
-  const pages = id ? pagesByDoc[id] ?? [] : [];
+  const pages = doc ? getPagesForDoc(pagesByDoc, doc.id) : [];
 
   const [selectedPageIdx, setSelectedPageIdx] = useState(0);
   const [draft, setDraft] = useState('');
@@ -53,9 +56,7 @@ export default function OcrScreen() {
   const handleCopyAll = async () => {
     const text = doc?.ocrFullText || draft;
     if (!text) return;
-    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
-      await navigator.clipboard.writeText(text).catch(() => {});
-    }
+    await copyTextToClipboard(text);
     setCopiedMsg(true);
     setTimeout(() => setCopiedMsg(false), 2000);
   };
@@ -72,14 +73,24 @@ export default function OcrScreen() {
       style={[styles.safe, { backgroundColor: colors.background }]}
     >
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <Pressable onPress={() => router.back()} style={styles.iconBtn}>
+        <Pressable
+          onPress={() => router.back()}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          style={styles.iconBtn}
+        >
           <ArrowLeft size={20} color={colors.text} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>
+        <Text
+          accessibilityRole="header"
+          style={[styles.headerTitle, { color: colors.text }]}
+        >
           On-Device OCR
         </Text>
         <Pressable
           onPress={handleCopyAll}
+          accessibilityRole="button"
+          accessibilityLabel="Copy OCR text"
           style={[styles.pillBtn, { backgroundColor: colors.surfaceMuted }]}
         >
           <Copy size={14} color={colors.text} />
@@ -193,7 +204,13 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
   },
-  iconBtn: { padding: 6 },
+  iconBtn: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 6,
+  },
   headerTitle: { fontSize: 17, fontWeight: '700' },
   pillBtn: {
     flexDirection: 'row',

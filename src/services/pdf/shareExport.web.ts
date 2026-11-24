@@ -1,5 +1,11 @@
 import { storage } from '../../storage';
-import type { Document, ExportOptions, Page, QualityPreset } from '../../types/models';
+import type {
+  Document,
+  ExportOptions,
+  Page,
+  QualityPreset,
+  RedactAnnotation,
+} from '../../types/models';
 import { safeFileStem } from '../../utils/format';
 import { reencodeJpegForExport } from '../image/processor';
 import { buildPdfBytes, type PdfPageInput } from './pdfExporter';
@@ -9,6 +15,12 @@ const QUALITY_MAP: Record<QualityPreset, { maxDim: number; jpegQuality: number }
   medium: { maxDim: 1650, jpegQuality: 0.78 },
   high: { maxDim: 2400, jpegQuality: 0.92 },
 };
+
+function getPageRedactions(page: Page): RedactAnnotation[] {
+  return page.annotations.filter(
+    (a): a is RedactAnnotation => a.type === 'redact',
+  );
+}
 
 export async function buildDocumentPdfBytes(
   _doc: Document,
@@ -28,10 +40,12 @@ export async function buildDocumentPdfBytes(
 
   const pageInputs: PdfPageInput[] = [];
   for (const page of pages) {
+    const redactions = getPageRedactions(page);
     const encoded = await reencodeJpegForExport(
       page.processedUri,
       maxDim,
       jpegQuality,
+      redactions,
     );
     pageInputs.push({
       jpegBytes: encoded.bytes,
@@ -102,6 +116,7 @@ export async function exportAndShareDocument(
       page.processedUri,
       maxDim,
       jpegQuality,
+      getPageRedactions(page),
     );
     const suffix = pages.length > 1 ? `_p${i + 1}` : '';
     lastFileName = `${stem}${suffix}.jpg`;

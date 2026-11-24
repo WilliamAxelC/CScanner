@@ -10,7 +10,12 @@ import {
   type SyncOperation,
 } from '../types/models';
 import { base64ToUint8 } from '../utils/format';
-import type { StorageAdapter } from './types';
+import {
+  assertSafeAssetId,
+  isSafeLocalFetchUri,
+  safeJsonParse,
+} from '../utils/security';
+import type { StorageAdapter, StorageStats } from './types';
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -27,6 +32,20 @@ function getImagesDir(): Directory {
     dir.create({ intermediates: true, idempotent: true });
   }
   return dir;
+}
+
+function getScanCacheDir(): Directory {
+  return new Directory(Paths.cache, 'mlkit-scans');
+}
+
+function isManagedImageUri(uri: string): boolean {
+  if (!uri) return false;
+  const imgPrefix = getImagesDir().uri.replace(/\/+$/, '');
+  const cachePrefix = getScanCacheDir().uri.replace(/\/+$/, '');
+  return (
+    uri.startsWith(`${imgPrefix}/`) ||
+    uri.startsWith(`${cachePrefix}/`)
+  );
 }
 
 export async function resolveDisplayUri(uri: string): Promise<string> {
@@ -103,8 +122,8 @@ function mapDocRow(r: DocumentRow): Document {
     id: r.id,
     title: r.title,
     folderId: r.folder_id,
-    tags: JSON.parse(r.tags_json || '[]'),
-    pageIds: JSON.parse(r.page_ids_json || '[]'),
+    tags: safeJsonParse<string[]>(r.tags_json, []),
+    pageIds: safeJsonParse<string[]>(r.page_ids_json, []),
     ocrFullText: r.ocr_full_text || '',
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -125,14 +144,14 @@ function mapPageRow(r: PageRow): Page {
     processedUri: r.processed_uri,
     width: r.width,
     height: r.height,
-    quad: r.quad_json ? JSON.parse(r.quad_json) : undefined,
+    quad: r.quad_json ? safeJsonParse<Page['quad'] | undefined>(r.quad_json, undefined) : undefined,
     rotation: r.rotation,
     filter: r.filter,
     brightness: r.brightness,
     contrast: r.contrast,
     ocrText: r.ocr_text || '',
-    ocrBlocks: JSON.parse(r.ocr_blocks_json || '[]'),
-    annotations: JSON.parse(r.annotations_json || '[]'),
+    ocrBlocks: safeJsonParse<Page['ocrBlocks']>(r.ocr_blocks_json, []),
+    annotations: safeJsonParse<Page['annotations']>(r.annotations_json, []),
     driveImageFileId: r.drive_image_file_id ?? undefined,
     updatedAt: r.updated_at,
   };
@@ -479,7 +498,10 @@ class NativeStorageAdapter implements StorageAdapter {
       ['app_settings'],
     );
     if (!row) return DEFAULT_APP_SETTINGS;
-    return { ...DEFAULT_APP_SETTINGS, ...JSON.parse(row.value_json) };
+    return {
+      ...DEFAULT_APP_SETTINGS,
+      ...safeJsonParse<Partial<AppSettings>>(row.value_json, {}),
+    };
   }
 
   async saveSettings(settings: AppSettings): Promise<void> {
@@ -495,8 +517,9 @@ class NativeStorageAdapter implements StorageAdapter {
     bytes: Uint8Array,
     ext: 'jpg' | 'png' = 'jpg',
   ): Promise<string> {
+    const safeId = assertSafeAssetId(id);
     const dir = getImagesDir();
-    const file = new File(dir, `${id}.${ext}`);
+    const file = new File(dir, `${safeId}.${ext}`);
     file.create({ intermediates: true, overwrite: true });
     await file.write(bytes);
     return file.uri;
@@ -513,6 +536,9 @@ class NativeStorageAdapter implements StorageAdapter {
       const file = new File(uri);
       return await file.bytes();
     } catch {
+      if (!isSafeLocalFetchUri(uri)) {
+        throw new Error('Blocked unsafe URI scheme when reading local image');
+      }
       const res = await fetch(uri);
       return new Uint8Array(await res.arrayBuffer());
     }
@@ -520,12 +546,120 @@ class NativeStorageAdapter implements StorageAdapter {
 
   async deleteImage(uri: string): Promise<void> {
     try {
+      if (!isManagedImageUri(uri)) {
+        return;
+      }
       const file = new File(uri);
       if (file.exists) {
         file.delete();
       }
     } catch {
       // ignore missing/unowned files
+    }
+  }
+
+  async getStorageStats(): Promise<StorageStats> {
+    const db = await getDb();
+    const [docsRow, pagesRow, sigRow, queueRow] = await Promise.all([
+      db.getFirstAsync<{ cnt: number }>(
+        'SELECT COUNT(*) AS cnt FROM documents WHERE deleted_at IS NULL',
+      ),
+      db.getFirstAsync<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pages p JOIN documents d ON p.document_id = d.id WHERE d.deleted_at IS NULL`,
+      ),
+      db.getFirstAsync<{ cnt: number }>('SELECT COUNT(*) AS cnt FROM signatures'),
+      db.getFirstAsync<{ cnt: number }>('SELECT COUNT(*) AS cnt FROM sync_queue'),
+    ]);
+
+    let imageBytes = 0;
+    try {
+      const dir = getImagesDir();
+      for (const entry of dir.list()) {
+        if (entry instanceof File) {
+          imageBytes += entry.size;
+        }
+      }
+      const cacheDir = getScanCacheDir();
+      if (cacheDir.exists) {
+        for (const entry of cacheDir.list()) {
+          if (entry instanceof File) {
+            imageBytes += entry.size;
+          }
+        }
+      }
+    } catch {
+      // ignore file stat errors
+    }
+
+    return {
+      docCount: docsRow?.cnt ?? 0,
+      pageCount: pagesRow?.cnt ?? 0,
+      signatureCount: sigRow?.cnt ?? 0,
+      pendingSyncCount: queueRow?.cnt ?? 0,
+      imageBytes,
+    };
+  }
+
+  async clearCache(): Promise<number> {
+    let freed = 0;
+    const db = await getDb();
+    const pageRows = await db.getAllAsync<{ original_uri: string; processed_uri: string }>(
+      `SELECT p.original_uri, p.processed_uri FROM pages p JOIN documents d ON p.document_id = d.id WHERE d.deleted_at IS NULL`,
+    );
+    const sigRows = await db.getAllAsync<{ png_uri: string }>(
+      'SELECT png_uri FROM signatures',
+    );
+    const liveUris = new Set<string>();
+    for (const r of pageRows) {
+      liveUris.add(r.original_uri);
+      liveUris.add(r.processed_uri);
+    }
+    for (const s of sigRows) {
+      liveUris.add(s.png_uri);
+    }
+
+    try {
+      const cacheDir = getScanCacheDir();
+      if (cacheDir.exists) {
+        for (const entry of cacheDir.list()) {
+          if (entry instanceof File && !liveUris.has(entry.uri)) {
+            freed += entry.size;
+            entry.delete();
+          }
+        }
+      }
+      const imgDir = getImagesDir();
+      for (const entry of imgDir.list()) {
+        if (entry instanceof File && !liveUris.has(entry.uri)) {
+          freed += entry.size;
+          entry.delete();
+        }
+      }
+    } catch {
+      // ignore cleanup failures
+    }
+    return freed;
+  }
+
+  async eraseAllData(): Promise<void> {
+    const db = await getDb();
+    await db.execAsync(`
+      DELETE FROM folders;
+      DELETE FROM documents;
+      DELETE FROM pages;
+      DELETE FROM signatures;
+      DELETE FROM sync_queue;
+      DELETE FROM settings;
+      DELETE FROM documents_fts;
+    `);
+    try {
+      const imgDir = getImagesDir();
+      if (imgDir.exists) imgDir.delete();
+      getImagesDir();
+      const cacheDir = getScanCacheDir();
+      if (cacheDir.exists) cacheDir.delete();
+    } catch {
+      // ignore fs cleanup failures
     }
   }
 }

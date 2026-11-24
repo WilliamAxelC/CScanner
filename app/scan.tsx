@@ -45,12 +45,18 @@ export default function ScanScreen() {
   const params = useLocalSearchParams<{
     documentId?: string;
     mode?: string;
+    fromApp?: string;
   }>();
   const { colors } = useTheme();
 
+  const documents = useAppStore((s) => s.documents);
   const createDocumentWithPages = useAppStore((s) => s.createDocumentWithPages);
   const appendPagesToDocument = useAppStore((s) => s.appendPagesToDocument);
   const settings = useAppStore((s) => s.settings);
+  const validTargetDocId =
+    params.documentId && documents.some((d) => d.id === params.documentId)
+      ? params.documentId
+      : undefined;
 
   const [busy, setBusy] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
@@ -109,11 +115,11 @@ export default function ScanScreen() {
         filter: settings.defaultFilter,
       }));
 
-      if (params.documentId) {
-        await appendPagesToDocument(params.documentId, newPages);
+      if (validTargetDocId) {
+        await appendPagesToDocument(validTargetDocId, newPages);
         router.replace({
           pathname: '/doc/[id]',
-          params: { id: params.documentId },
+          params: { id: validTargetDocId },
         });
       } else {
         const doc = await createDocumentWithPages({ pages: newPages });
@@ -129,9 +135,10 @@ export default function ScanScreen() {
   };
 
   useEffect(() => {
-    if (isImportMode) {
+    const launchedFromApp = params.fromApp === '1';
+    if (launchedFromApp && isImportMode) {
       handleImportPhotos();
-    } else if (nativeScanSupported) {
+    } else if (launchedFromApp && nativeScanSupported) {
       handleNativeMlkitScan();
     } else if (Platform.OS === 'web') {
       startWebCamera();
@@ -296,11 +303,11 @@ export default function ScanScreen() {
     setBusy(true);
     setStatusMsg('Processing & enhancing pages...');
     try {
-      if (params.documentId) {
-        await appendPagesToDocument(params.documentId, pagesToSave);
+      if (validTargetDocId) {
+        await appendPagesToDocument(validTargetDocId, pagesToSave);
         router.replace({
           pathname: '/doc/[id]',
-          params: { id: params.documentId },
+          params: { id: validTargetDocId },
         });
       } else {
         const doc = await createDocumentWithPages({ pages: pagesToSave });
@@ -322,6 +329,8 @@ export default function ScanScreen() {
             stopWebCamera();
             router.back();
           }}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
           style={styles.topBtn}
         >
           <ArrowLeft size={20} color="#FFFFFF" />
@@ -552,8 +561,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   topBtn: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.1)',
     alignItems: 'center',

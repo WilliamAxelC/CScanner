@@ -1,9 +1,11 @@
+import { Platform } from 'react-native';
 import { create } from 'zustand';
+import { clearErrorLog, recordError } from '../services/diagnostics/errorLog';
 import { processImage } from '../services/image/processor';
 import { recognizeImageText } from '../services/ocr/ocrService';
 import { buildDocumentPdfBytes } from '../services/pdf/shareExport';
 import { FetchDriveClient } from '../services/sync/driveApi';
-import { loadStoredToken } from '../services/sync/googleAuth';
+import { loadStoredToken, saveStoredToken } from '../services/sync/googleAuth';
 import { SyncEngine, type SyncResult } from '../services/sync/syncEngine';
 import { storage } from '../storage';
 import {
@@ -115,6 +117,34 @@ interface AppState {
 
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>;
   triggerSync: (accessTokenOverride?: string) => Promise<SyncResult | null>;
+  clearLocalCache: () => Promise<number>;
+  eraseAllData: () => Promise<void>;
+}
+
+async function persistInputOrigin(
+  pageId: string,
+  input: NewPageInput,
+): Promise<string> {
+  if (input.originalBytes) {
+    return storage.saveImageBytes(`orig_${pageId}`, input.originalBytes, 'jpg');
+  }
+  const uri = input.originalUri || '';
+  // Native ML Kit writes temp scans to cacheDir; copy them into durable filesDir storage.
+  if (
+    Platform.OS !== 'web' &&
+    uri &&
+    !uri.includes('/cscanner/images/')
+  ) {
+    try {
+      const bytes = await storage.readImageBytes(uri);
+      const saved = await storage.saveImageBytes(`orig_${pageId}`, bytes, 'jpg');
+      await storage.deleteImage(uri);
+      return saved;
+    } catch {
+      return uri;
+    }
+  }
+  return uri;
 }
 
 async function enqueue(
@@ -277,9 +307,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     for (let i = 0; i < pages.length; i++) {
       const input = pages[i];
       const pageId = generateId();
-      const origUri = input.originalBytes
-        ? await storage.saveImageBytes(`orig_${pageId}`, input.originalBytes, 'jpg')
-        : input.originalUri!;
+      const origUri = await persistInputOrigin(pageId, input);
 
       const filter = input.filter ?? settings.defaultFilter;
       let procUri = input.processedUri || origUri;
@@ -366,9 +394,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     for (let i = 0; i < pages.length; i++) {
       const input = pages[i];
       const pageId = generateId();
-      const origUri = input.originalBytes
-        ? await storage.saveImageBytes(`orig_${pageId}`, input.originalBytes, 'jpg')
-        : input.originalUri!;
+      const origUri = await persistInputOrigin(pageId, input);
       const filter = input.filter ?? settings.defaultFilter;
 
       let procUri = input.processedUri || origUri;
@@ -451,6 +477,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   deleteDocument: async (docId) => {
     const doc = await storage.getDocument(docId);
     if (!doc) return;
+    const pages = await storage.listPages(docId);
+    for (const page of pages) {
+      await storage.deleteImage(page.originalUri);
+      if (page.processedUri !== page.originalUri) {
+        await storage.deleteImage(page.processedUri);
+      }
+    }
     const now = Date.now();
     await storage.upsertDocument({
       ...doc,
@@ -613,7 +646,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           ocrBlocks: res.blocks,
           updatedAt: Date.now(),
         });
-      } catch {
+      } catch (err) {
+        recordError('OCR', err);
         // Keep page intact even if OCR fails on a blank page
       }
     }
@@ -723,17 +757,47 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       const res = await engine.sync();
       await get().refreshLibrary();
+      if (res.errors.length > 0) {
+        recordError('DriveSync', res.errors[0]);
+      }
       set({
         syncState: res.errors.length > 0 ? 'error' : 'idle',
         lastSyncError: res.errors[0] ?? null,
       });
       return res;
     } catch (err) {
+      recordError('DriveSync', err);
       set({
         syncState: 'error',
         lastSyncError: err instanceof Error ? err.message : String(err),
       });
       return null;
     }
+  },
+
+  clearLocalCache: async () => {
+    if (!storage.clearCache) return 0;
+    const freed = await storage.clearCache();
+    await get().refreshLibrary();
+    return freed;
+  },
+
+  eraseAllData: async () => {
+    saveStoredToken(null);
+    await storage.eraseAllData?.();
+    clearErrorLog();
+    set({
+      folders: [],
+      documents: [],
+      pagesByDoc: {},
+      signatures: [],
+      settings: DEFAULT_APP_SETTINGS,
+      searchQuery: '',
+      selectedFolderId: 'all',
+      selectedTag: null,
+      syncState: 'idle',
+      lastSyncError: null,
+      pendingSyncCount: 0,
+    });
   },
 }));

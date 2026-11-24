@@ -119,13 +119,21 @@ export default function IdCardScreen() {
       style={[styles.safe, { backgroundColor: colors.background }]}
     >
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <Pressable onPress={() => router.back()} style={styles.backBtn}>
+        <Pressable
+          onPress={() => router.back()}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          style={styles.backBtn}
+        >
           <ArrowLeft size={20} color={colors.text} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>
+        <Text
+          accessibilityRole="header"
+          style={[styles.headerTitle, { color: colors.text }]}
+        >
           ID Card Mode
         </Text>
-        <View style={{ width: 36 }} />
+        <View style={{ width: 44 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.body}>
@@ -272,6 +280,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   backBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
     padding: 8,
   },
   headerTitle: {

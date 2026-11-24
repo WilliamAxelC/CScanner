@@ -18,6 +18,8 @@ import { useTheme } from '../../../src/theme/ThemeProvider';
 import type { PageSizePreset, QualityPreset } from '../../../src/types/models';
 import { formatBytes } from '../../../src/utils/format';
 
+import { getPagesForDoc } from '../../../src/utils/security';
+
 export default function ExportScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -28,7 +30,7 @@ export default function ExportScreen() {
   const settings = useAppStore((s) => s.settings);
 
   const doc = documents.find((d) => d.id === id);
-  const pages = id ? pagesByDoc[id] ?? [] : [];
+  const pages = doc ? getPagesForDoc(pagesByDoc, doc.id) : [];
 
   const [format, setFormat] = useState<'pdf' | 'jpeg'>('pdf');
   const [pageSize, setPageSize] = useState<PageSizePreset>(
@@ -272,6 +274,8 @@ export default function ExportScreen() {
               <Switch
                 value={includeOcrLayer}
                 onValueChange={setIncludeOcrLayer}
+                accessibilityRole="switch"
+                accessibilityLabel="Searchable OCR Text Layer"
                 trackColor={{ true: colors.primary }}
               />
             </View>
@@ -298,6 +302,8 @@ export default function ExportScreen() {
               <Switch
                 value={protectPdf}
                 onValueChange={setProtectPdf}
+                accessibilityRole="switch"
+                accessibilityLabel="Password Protect PDF"
                 trackColor={{ true: colors.primary }}
               />
             </View>

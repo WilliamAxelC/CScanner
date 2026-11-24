@@ -29,7 +29,7 @@ module.exports = {
         cacheName: 'tesseract-assets',
         expiration: {
           maxEntries: 16,
-          maxAgeSeconds: 60 * 60 * 24 * 90,
+          maxAgeSeconds: 60 * 60 * 24 * 14,
         },
       },
     },

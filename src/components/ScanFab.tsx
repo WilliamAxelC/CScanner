@@ -70,7 +70,9 @@ export function ScanFab({ onScan, onImport, onIdCard }: ScanFabProps) {
       <View style={styles.fabRow}>
         <Pressable
           onPress={() => setExpanded((v) => !v)}
+          accessibilityRole="button"
           accessibilityLabel="More scan options"
+          accessibilityState={{ expanded }}
           style={[
             styles.secondaryFab,
             {
@@ -91,6 +93,7 @@ export function ScanFab({ onScan, onImport, onIdCard }: ScanFabProps) {
             setExpanded(false);
             onScan();
           }}
+          accessibilityRole="button"
           accessibilityLabel="Scan document"
           style={({ pressed }) => [
             styles.primaryFab,
@@ -146,9 +149,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   secondaryFab: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',

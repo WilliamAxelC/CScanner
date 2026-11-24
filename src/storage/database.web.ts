@@ -9,7 +9,8 @@ import {
   type SyncOperation,
 } from '../types/models';
 import { base64ToUint8 } from '../utils/format';
-import type { StorageAdapter } from './types';
+import { assertSafeAssetId, isSafeLocalFetchUri } from '../utils/security';
+import type { StorageAdapter, StorageStats } from './types';
 
 interface BlobRecord {
   id: string;
@@ -225,8 +226,9 @@ class WebStorageAdapter implements StorageAdapter {
     bytes: Uint8Array,
     ext: 'jpg' | 'png' = 'jpg',
   ): Promise<string> {
+    const safeId = assertSafeAssetId(id);
     const db = await getDb();
-    const key = `${id}.${ext}`;
+    const key = `${safeId}.${ext}`;
     const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
     const copy = new Uint8Array(bytes.byteLength);
     copy.set(bytes);
@@ -244,7 +246,7 @@ class WebStorageAdapter implements StorageAdapter {
       const db = await getDb();
       const key = uri.slice(BLOB_URI_PREFIX.length);
       const rec = await db.get('blobs', key);
-      if (!rec) throw new Error(`Image blob not found: ${uri}`);
+      if (!rec) throw new Error(`Image blob not found: ${key}`);
       return new Uint8Array(rec.buffer);
     }
     if (uri.startsWith('data:')) {
@@ -252,6 +254,9 @@ class WebStorageAdapter implements StorageAdapter {
       if (comma !== -1) {
         return base64ToUint8(uri.slice(comma + 1));
       }
+    }
+    if (!isSafeLocalFetchUri(uri)) {
+      throw new Error('Blocked unsafe URI scheme when reading local image');
     }
     const res = await fetch(uri);
     if (!res.ok) throw new Error(`Failed to fetch image bytes: ${res.status}`);
@@ -268,6 +273,91 @@ class WebStorageAdapter implements StorageAdapter {
       objectUrlCache.delete(key);
     }
     await db.delete('blobs', key);
+  }
+
+  async getStorageStats(): Promise<StorageStats> {
+    const db = await getDb();
+    const [docs, pages, sigs, queue, blobs] = await Promise.all([
+      db.getAll('documents'),
+      db.getAll('pages'),
+      db.getAll('signatures'),
+      db.getAll('syncQueue'),
+      db.getAll('blobs'),
+    ]);
+    const activeDocIds = new Set(
+      docs.filter((d) => d.deletedAt === null).map((d) => d.id),
+    );
+    const activePages = pages.filter((p) => activeDocIds.has(p.documentId));
+    let imageBytes = 0;
+    for (const b of blobs) {
+      imageBytes += b.buffer.byteLength;
+    }
+    return {
+      docCount: activeDocIds.size,
+      pageCount: activePages.length,
+      signatureCount: sigs.length,
+      pendingSyncCount: queue.length,
+      imageBytes,
+    };
+  }
+
+  async clearCache(): Promise<number> {
+    const db = await getDb();
+    const [docs, pages, sigs, blobs] = await Promise.all([
+      db.getAll('documents'),
+      db.getAll('pages'),
+      db.getAll('signatures'),
+      db.getAll('blobs'),
+    ]);
+    const activeDocIds = new Set(
+      docs.filter((d) => d.deletedAt === null).map((d) => d.id),
+    );
+    const liveKeys = new Set<string>();
+    for (const p of pages) {
+      if (!activeDocIds.has(p.documentId)) continue;
+      if (p.originalUri.startsWith(BLOB_URI_PREFIX)) {
+        liveKeys.add(p.originalUri.slice(BLOB_URI_PREFIX.length));
+      }
+      if (p.processedUri.startsWith(BLOB_URI_PREFIX)) {
+        liveKeys.add(p.processedUri.slice(BLOB_URI_PREFIX.length));
+      }
+    }
+    for (const s of sigs) {
+      if (s.pngUri.startsWith(BLOB_URI_PREFIX)) {
+        liveKeys.add(s.pngUri.slice(BLOB_URI_PREFIX.length));
+      }
+    }
+
+    let freed = 0;
+    for (const b of blobs) {
+      if (!liveKeys.has(b.id)) {
+        freed += b.buffer.byteLength;
+        const oldUrl = objectUrlCache.get(b.id);
+        if (oldUrl) {
+          URL.revokeObjectURL(oldUrl);
+          objectUrlCache.delete(b.id);
+        }
+        await db.delete('blobs', b.id);
+      }
+    }
+    return freed;
+  }
+
+  async eraseAllData(): Promise<void> {
+    const db = await getDb();
+    for (const url of objectUrlCache.values()) {
+      URL.revokeObjectURL(url);
+    }
+    objectUrlCache.clear();
+    await Promise.all([
+      db.clear('folders'),
+      db.clear('documents'),
+      db.clear('pages'),
+      db.clear('signatures'),
+      db.clear('syncQueue'),
+      db.clear('settings'),
+      db.clear('blobs'),
+    ]);
   }
 }
 

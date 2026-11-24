@@ -7,6 +7,14 @@ import type {
   SyncOperation,
 } from '../types/models';
 
+export interface StorageStats {
+  docCount: number;
+  pageCount: number;
+  signatureCount: number;
+  pendingSyncCount: number;
+  imageBytes: number;
+}
+
 export interface StorageAdapter {
   init(): Promise<void>;
 
@@ -42,4 +50,8 @@ export interface StorageAdapter {
   ): Promise<string>;
   readImageBytes(uri: string): Promise<Uint8Array>;
   deleteImage(uri: string): Promise<void>;
+
+  getStorageStats?(): Promise<StorageStats>;
+  clearCache?(): Promise<number>;
+  eraseAllData?(): Promise<void>;
 }

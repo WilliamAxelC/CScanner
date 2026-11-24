@@ -2,7 +2,11 @@ import zlib from 'node:zlib';
 import { PDFDocument } from '@cantoo/pdf-lib';
 import jpeg from 'jpeg-js';
 import { describe, expect, it } from 'vitest';
-import { buildPdfBytes, sanitizeWinAnsi } from '../services/pdf/pdfExporter';
+import {
+  buildPdfBytes,
+  filterRedactedOcrBlocks,
+  sanitizeWinAnsi,
+} from '../services/pdf/pdfExporter';
 
 function makeSolidJpeg(width: number, height: number): Uint8Array {
   const data = new Uint8Array(width * height * 4);
@@ -186,5 +190,93 @@ describe('PDF Export Engine', () => {
     const aSize = autoDoc.getPage(0).getSize();
     expect(aSize.width).toBeCloseTo(595.28, 1);
     expect(aSize.height).toBeCloseTo(595.28 / 2, 1);
+  });
+
+  it('strips OCR blocks covered by redaction rectangles before PDF embedding', async () => {
+    const filtered = filterRedactedOcrBlocks(
+      [
+        { text: 'SECRET_SSN', x: 0.2, y: 0.2, width: 0.2, height: 0.05 },
+        { text: 'PUBLIC_TOTAL', x: 0.2, y: 0.7, width: 0.2, height: 0.05 },
+      ],
+      [
+        {
+          id: 'red1',
+          type: 'redact',
+          x: 0.15,
+          y: 0.18,
+          width: 0.35,
+          height: 0.1,
+          color: '#000000',
+        },
+      ],
+    );
+    expect(filtered.map((b) => b.text)).toEqual(['PUBLIC_TOTAL']);
+
+    const jpg = makeSolidJpeg(300, 400);
+    const pdfBytes = await buildPdfBytes(
+      [
+        {
+          jpegBytes: jpg,
+          width: 300,
+          height: 400,
+          ocrBlocks: [
+            { text: 'SECRET_SSN', x: 0.2, y: 0.2, width: 0.2, height: 0.05 },
+            { text: 'PUBLIC_TOTAL', x: 0.2, y: 0.7, width: 0.2, height: 0.05 },
+          ],
+          annotations: [
+            {
+              id: 'red1',
+              type: 'redact',
+              x: 0.15,
+              y: 0.18,
+              width: 0.35,
+              height: 0.1,
+              color: '#000000',
+            },
+          ],
+        },
+      ],
+      {
+        format: 'pdf',
+        pageSize: 'a4',
+        quality: 'medium',
+        includeOcrLayer: true,
+      },
+    );
+
+    const doc = await PDFDocument.load(pdfBytes);
+    const contents = doc.context.enumerateIndirectObjects()
+      .map(([, obj]) => obj)
+      .filter((obj: unknown) => typeof obj === 'object' && obj !== null && 'contents' in (obj as Record<string, unknown>))
+      .map((obj: unknown) => {
+        const raw = (obj as { contents: Uint8Array }).contents;
+        try {
+          return zlib.inflateSync(Buffer.from(raw)).toString('latin1');
+        } catch {
+          return Buffer.from(raw).toString('latin1');
+        }
+      })
+      .join('\n');
+
+    const hexPublic = Buffer.from('PUBLIC_TOTAL', 'latin1').toString('hex').toUpperCase();
+    const hexSecret = Buffer.from('SECRET_SSN', 'latin1').toString('hex').toUpperCase();
+    expect(
+      contents.includes('PUBLIC_TOTAL') || contents.toUpperCase().includes(hexPublic),
+    ).toBe(true);
+    expect(contents).not.toContain('SECRET_SSN');
+    expect(contents.toUpperCase()).not.toContain(hexSecret);
+  });
+
+  it('rejects whitespace-only PDF encryption passwords', async () => {
+    const jpg = makeSolidJpeg(200, 200);
+    await expect(
+      buildPdfBytes([{ jpegBytes: jpg, width: 200, height: 200 }], {
+        format: 'pdf',
+        pageSize: 'a4',
+        quality: 'medium',
+        includeOcrLayer: false,
+        password: '   \t ',
+      }),
+    ).rejects.toThrow(/empty/i);
   });
 });

@@ -42,6 +42,8 @@ const FILTER_PRESETS: Array<{ id: FilterPreset; label: string }> = [
   { id: 'lighten', label: 'Lighten' },
 ];
 
+import { getPagesForDoc } from '../../../../src/utils/security';
+
 export default function PageEditorScreen() {
   const { id, pageId, tab } = useLocalSearchParams<{
     id: string;
@@ -49,14 +51,14 @@ export default function PageEditorScreen() {
     tab?: string;
   }>();
   const router = useRouter();
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
 
   const pagesByDoc = useAppStore((s) => s.pagesByDoc);
   const signatures = useAppStore((s) => s.signatures);
   const updatePageEdits = useAppStore((s) => s.updatePageEdits);
   const saveNewSignature = useAppStore((s) => s.saveNewSignature);
 
-  const page = (id ? pagesByDoc[id] : [])?.find((p) => p.id === pageId);
+  const page = getPagesForDoc(pagesByDoc, id).find((p) => p.id === pageId);
 
   const [activeTab, setActiveTab] = useState<'filters' | 'crop' | 'annotate'>(
     tab === 'crop' ? 'crop' : tab === 'annotate' ? 'annotate' : 'filters',
@@ -669,7 +671,7 @@ export default function PageEditorScreen() {
       <Modal
         visible={showSigPad}
         transparent
-        animationType="fade"
+        animationType={reduceMotion ? 'none' : 'fade'}
         onRequestClose={() => setShowSigPad(false)}
       >
         <View
@@ -692,7 +694,7 @@ export default function PageEditorScreen() {
       <Modal
         visible={showWatermarkModal}
         transparent
-        animationType="fade"
+        animationType={reduceMotion ? 'none' : 'fade'}
         onRequestClose={() => setShowWatermarkModal(false)}
       >
         <View

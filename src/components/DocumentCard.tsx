@@ -112,6 +112,8 @@ export function DocumentCard({
             onMenuPress();
           }}
           hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel={`Document options for ${doc.title}`}
           style={styles.menuBtn}
         >
           <MoreVertical size={18} color={colors.textMuted} />
@@ -176,6 +178,8 @@ export function DocumentCard({
               onMenuPress();
             }}
             hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel={`Document options for ${doc.title}`}
           >
             <MoreVertical size={16} color={colors.textMuted} />
           </Pressable>

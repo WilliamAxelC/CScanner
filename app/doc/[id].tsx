@@ -30,15 +30,19 @@ import { ResolvedImage } from '../../src/components/ResolvedImage';
 import { useAppStore } from '../../src/store/useAppStore';
 import { useTheme } from '../../src/theme/ThemeProvider';
 
+import { ConfirmDialog } from '../../src/components/ConfirmDialog';
+import { getPagesForDoc } from '../../src/utils/security';
+
 export default function DocumentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
 
   const documents = useAppStore((s) => s.documents);
   const folders = useAppStore((s) => s.folders);
   const pagesByDoc = useAppStore((s) => s.pagesByDoc);
   const signatures = useAppStore((s) => s.signatures);
+  const settings = useAppStore((s) => s.settings);
 
   const updateDocumentMeta = useAppStore((s) => s.updateDocumentMeta);
   const reorderPages = useAppStore((s) => s.reorderPages);
@@ -46,7 +50,10 @@ export default function DocumentDetailScreen() {
   const rotatePageQuick = useAppStore((s) => s.rotatePageQuick);
 
   const doc = documents.find((d) => d.id === id);
-  const pages = useMemo(() => (id ? pagesByDoc[id] ?? [] : []), [id, pagesByDoc]);
+  const pages = useMemo(
+    () => (doc ? getPagesForDoc(pagesByDoc, doc.id) : []),
+    [doc, pagesByDoc],
+  );
 
   const [activeIdx, setActiveIdx] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -56,6 +63,9 @@ export default function DocumentDetailScreen() {
   );
   const [tagsDraft, setTagsDraft] = useState('');
   const [stageBox, setStageBox] = useState({ width: 320, height: 420 });
+  const [confirmDeletePageId, setConfirmDeletePageId] = useState<string | null>(
+    null,
+  );
 
   const safeIdx = Math.min(activeIdx, Math.max(0, pages.length - 1));
   const currentPage = pages[safeIdx];
@@ -330,10 +340,16 @@ export default function DocumentDetailScreen() {
             <Pressable
               onPress={async () => {
                 if (pages.length <= 1) return;
-                await deletePageFromDoc(doc.id, currentPage.id);
-                setActiveIdx((i) => Math.max(0, i - 1));
+                if (settings.confirmBeforeDelete) {
+                  setConfirmDeletePageId(currentPage.id);
+                } else {
+                  await deletePageFromDoc(doc.id, currentPage.id);
+                  setActiveIdx((i) => Math.max(0, i - 1));
+                }
               }}
               disabled={pages.length <= 1}
+              accessibilityRole="button"
+              accessibilityLabel="Delete page"
               style={[
                 styles.miniTool,
                 {
@@ -462,7 +478,7 @@ export default function DocumentDetailScreen() {
       <Modal
         visible={metaModal !== null}
         transparent
-        animationType="fade"
+        animationType={reduceMotion ? 'none' : 'fade'}
         onRequestClose={() => setMetaModal(null)}
       >
         <Pressable
@@ -588,7 +604,7 @@ export default function DocumentDetailScreen() {
                     setMetaModal(null);
                     router.push({
                       pathname: '/scan',
-                      params: { documentId: doc.id, mode: 'camera' },
+                      params: { documentId: doc.id, mode: 'camera', fromApp: '1' },
                     });
                   }}
                   style={[styles.rowItem, { borderBottomColor: colors.border }]}
@@ -602,7 +618,7 @@ export default function DocumentDetailScreen() {
                     setMetaModal(null);
                     router.push({
                       pathname: '/scan',
-                      params: { documentId: doc.id, mode: 'import' },
+                      params: { documentId: doc.id, mode: 'import', fromApp: '1' },
                     });
                   }}
                   style={[styles.rowItem, { borderBottomWidth: 0 }]}
@@ -616,6 +632,24 @@ export default function DocumentDetailScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <ConfirmDialog
+        visible={Boolean(confirmDeletePageId)}
+        title="Delete This Page?"
+        message="Remove the current page from this document? Remaining pages will be renumbered."
+        confirmLabel="Delete Page"
+        destructive
+        onCancel={() => setConfirmDeletePageId(null)}
+        onConfirm={() => {
+          const targetPageId = confirmDeletePageId;
+          setConfirmDeletePageId(null);
+          if (targetPageId) {
+            void deletePageFromDoc(doc.id, targetPageId).then(() => {
+              setActiveIdx((i) => Math.max(0, i - 1));
+            });
+          }
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -636,7 +670,13 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
   },
-  iconBtn: { padding: 6 },
+  iconBtn: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 6,
+  },
   titleWrap: { flex: 1 },
   headerTitle: { fontSize: 16, fontWeight: '700' },
   headerSub: { fontSize: 11 },

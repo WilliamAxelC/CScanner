@@ -1,5 +1,5 @@
 import { storage } from '../../storage/database.web';
-import type { FilterPreset, Quad } from '../../types/models';
+import type { FilterPreset, Quad, RedactAnnotation } from '../../types/models';
 import { generateId } from '../../utils/ids';
 import { detectDocumentQuad } from './autoEdge';
 import { applyFilterRGBA } from './filters';
@@ -191,6 +191,7 @@ export async function reencodeJpegForExport(
   uri: string,
   maxWidth: number,
   quality: number,
+  redactions?: RedactAnnotation[],
 ): Promise<{ bytes: Uint8Array; width: number; height: number }> {
   const { canvas } = await loadCanvasFromUri(uri);
   const scale = Math.min(1, maxWidth / Math.max(canvas.width, canvas.height));
@@ -202,6 +203,13 @@ export async function reencodeJpegForExport(
   out.height = h;
   const ctx = out.getContext('2d')!;
   ctx.drawImage(canvas, 0, 0, w, h);
+
+  if (redactions?.length) {
+    for (const r of redactions) {
+      ctx.fillStyle = r.color === '#FFFFFF' ? '#FFFFFF' : '#000000';
+      ctx.fillRect(r.x * w, r.y * h, r.width * w, r.height * h);
+    }
+  }
 
   const bytes = await canvasToJpegBytes(out, quality);
   return { bytes, width: w, height: h };

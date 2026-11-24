@@ -82,7 +82,7 @@ jobs:
       - name: Run CScannerMlkit Kotlin unit tests
         run: |
           cd android
-          ./gradlew :cscanner-mlkit:testReleaseUnitTest --no-daemon
+          ./gradlew :cscanner-mlkit:testDebugUnitTest --no-daemon
 
       - name: Build Android APK
         run: |

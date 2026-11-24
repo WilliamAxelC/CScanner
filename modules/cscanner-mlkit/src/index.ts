@@ -24,18 +24,27 @@ export interface ProcessImageNativeParams {
 }
 
 interface CScannerMlkitNativeInterface {
-  scanDocument(options: {
-    pageLimit?: number;
-    galleryImportAllowed?: boolean;
-    scannerMode?: 'FULL' | 'BASE' | 'BASE_WITH_FILTER';
-  }): Promise<ScanDocumentResult>;
+  scanDocument(
+    pageLimit: number,
+    galleryImportAllowed: boolean,
+    scannerMode: string,
+  ): Promise<ScanDocumentResult>;
   recognizeText(imageUri: string): Promise<OcrResult>;
-  processImage(params: ProcessImageNativeParams): Promise<ScannedPageNative>;
-  composeIdCard(params: {
-    frontUri: string;
-    backUri: string;
-    outputUri: string;
-  }): Promise<ScannedPageNative>;
+  processImage(
+    inputUri: string,
+    outputUri: string,
+    quadCoords: number[] | null,
+    rotation: number,
+    filter: string,
+    brightness: number,
+    contrast: number,
+    quality: number,
+  ): Promise<ScannedPageNative>;
+  composeIdCard(
+    frontUri: string,
+    backUri: string,
+    outputUri: string,
+  ): Promise<ScannedPageNative>;
 }
 
 const NativeModule =
@@ -53,7 +62,10 @@ export async function scanDocumentNative(options?: {
   if (!NativeModule) {
     throw new Error('CScannerMlkit native module is not available on this build');
   }
-  return NativeModule.scanDocument(options ?? {});
+  const pageLimit = options?.pageLimit ?? 24;
+  const galleryImportAllowed = options?.galleryImportAllowed ?? true;
+  const scannerMode = options?.scannerMode ?? 'FULL';
+  return NativeModule.scanDocument(pageLimit, galleryImportAllowed, scannerMode);
 }
 
 export async function recognizeTextNative(imageUri: string): Promise<OcrResult> {
@@ -69,7 +81,30 @@ export async function processImageNative(
   if (!NativeModule) {
     throw new Error('CScannerMlkit native module is not available on this build');
   }
-  return NativeModule.processImage(params);
+  const flatQuad =
+    params.quad && params.quad.length === 4
+      ? [
+          params.quad[0].x,
+          params.quad[0].y,
+          params.quad[1].x,
+          params.quad[1].y,
+          params.quad[2].x,
+          params.quad[2].y,
+          params.quad[3].x,
+          params.quad[3].y,
+        ]
+      : null;
+
+  return NativeModule.processImage(
+    params.inputUri,
+    params.outputUri,
+    flatQuad,
+    params.rotation,
+    params.filter,
+    params.brightness,
+    params.contrast,
+    params.quality ?? 88,
+  );
 }
 
 export async function composeIdCardNative(params: {
@@ -80,5 +115,9 @@ export async function composeIdCardNative(params: {
   if (!NativeModule) {
     throw new Error('CScannerMlkit native module is not available on this build');
   }
-  return NativeModule.composeIdCard(params);
+  return NativeModule.composeIdCard(
+    params.frontUri,
+    params.backUri,
+    params.outputUri,
+  );
 }

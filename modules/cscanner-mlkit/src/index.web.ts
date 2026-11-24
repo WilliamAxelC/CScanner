@@ -1,45 +1,24 @@
-import type { FilterPreset, OcrResult, Quad } from '../../../src/types/models';
+import { isNativeScannerAvailable } from './index';
 
-export interface ScannedPageNative {
-  uri: string;
-  width: number;
-  height: number;
-}
+export type {
+  ProcessImageNativeParams,
+  ScanDocumentResult,
+  ScannedPageNative,
+} from './index';
+export { isNativeScannerAvailable };
 
-export interface ScanDocumentResult {
-  cancelled: boolean;
-  pages: ScannedPageNative[];
-}
-
-export interface ProcessImageNativeParams {
-  inputUri: string;
-  outputUri: string;
-  quad?: Quad;
-  rotation: number;
-  filter: FilterPreset;
-  brightness: number;
-  contrast: number;
-  quality?: number;
-}
-
-export function isNativeScannerAvailable(): boolean {
-  return false;
-}
-
-export async function scanDocumentNative(): Promise<ScanDocumentResult> {
+export async function scanDocumentNative() {
   throw new Error('Native ML Kit scanner is not available on web');
 }
 
-export async function recognizeTextNative(_imageUri: string): Promise<OcrResult> {
+export async function recognizeTextNative(_imageUri: string) {
   throw new Error('Native ML Kit OCR is not available on web');
 }
 
-export async function processImageNative(
-  _params: ProcessImageNativeParams,
-): Promise<ScannedPageNative> {
+export async function processImageNative() {
   throw new Error('Native image processor is not available on web');
 }
 
-export async function composeIdCardNative(): Promise<ScannedPageNative> {
+export async function composeIdCardNative() {
   throw new Error('Native ID card composer is not available on web');
 }

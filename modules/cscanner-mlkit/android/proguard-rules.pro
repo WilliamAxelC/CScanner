@@ -1,0 +1,7 @@
+-keep class com.cscanner.mlkit.** { *; }
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_document_scanner.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_text_common.** { *; }
+-keep class com.google.android.gms.internal.mlkit_common.** { *; }
+-keep class com.google.android.gms.common.** { *; }
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod

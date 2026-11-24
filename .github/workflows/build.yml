@@ -79,6 +79,11 @@ jobs:
           EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID: ${{ secrets.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID }}
         run: npx expo prebuild --platform android --clean
 
+      - name: Run CScannerMlkit Kotlin unit tests
+        run: |
+          cd android
+          ./gradlew :cscanner-mlkit:testReleaseUnitTest --no-daemon
+
       - name: Build Android APK
         run: |
           cd android
@@ -91,12 +96,44 @@ jobs:
           if [ -f "android/app/build/outputs/apk/release/app-release.apk" ]; then
             cp "android/app/build/outputs/apk/release/app-release.apk" build-output/CScanner-release.apk
           elif [ -f "$APK_PATH" ]; then
-            # Fallback debug-signed release APK for personal sideloading when no release keystore secret is configured
             keytool -genkey -v -keystore /tmp/cscanner-ci.keystore -alias cscanner -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=CScanner,O=CScanner,C=US"
             BUILD_TOOLS=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
             "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" sign --ks /tmp/cscanner-ci.keystore --ks-pass pass:android --key-pass pass:android --out build-output/CScanner-release.apk "$APK_PATH"
           fi
           ls -lh build-output/
+
+      - name: Verify Release APK (size, ABI, compression, R8 keep rules, signature)
+        run: |
+          python3 - << 'PYEOF'
+          import os, zipfile
+
+          apk = "build-output/CScanner-release.apk"
+          size = os.path.getsize(apk)
+          print(f"APK size: {size} bytes ({size / (1024 * 1024):.2f} MB)")
+          assert size < 35 * 1024 * 1024, f"APK too large: {size} bytes"
+
+          with zipfile.ZipFile(apk) as z:
+              names = z.namelist()
+              bad_abis = [n for n in names if n.startswith("lib/") and not n.startswith("lib/arm64-v8a/")]
+              assert not bad_abis, f"Unexpected ABI libs present: {bad_abis[:5]}"
+              arm64_sos = [i for i in z.infolist() if i.filename.startswith("lib/arm64-v8a/") and i.filename.endswith(".so")]
+              assert len(arm64_sos) > 0, "No arm64-v8a .so libs found!"
+              stored_sos = [i.filename for i in arm64_sos if i.compress_type == zipfile.ZIP_STORED]
+              assert not stored_sos, f"Uncompressed .so found (useLegacyPackaging failed): {stored_sos[:5]}"
+
+              dex_bytes = b"".join(z.read(n) for n in names if n.endswith(".dex"))
+              for required in [
+                  b"Lcom/cscanner/mlkit/CScannerMlkitModule;",
+                  b"Lcom/google/mlkit/vision/documentscanner/GmsDocumentScannerOptions;",
+                  b"Lcom/google/mlkit/vision/documentscanner/internal/GmsDocumentScanningDelegateActivity;",
+              ]:
+                  assert required in dex_bytes, f"Missing kept class in dex: {required.decode()}"
+          print("APK structure, compression, ABI, and R8 keep checks passed!")
+          PYEOF
+
+          BUILD_TOOLS=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose build-output/CScanner-release.apk
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/aapt2" dump badging build-output/CScanner-release.apk | head -n 5
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

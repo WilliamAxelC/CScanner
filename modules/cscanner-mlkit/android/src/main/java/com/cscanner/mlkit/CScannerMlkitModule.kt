@@ -17,6 +17,7 @@ import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import expo.modules.kotlin.Promise
+import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
@@ -30,6 +31,27 @@ import kotlin.math.roundToInt
 class CScannerMlkitModule : Module() {
   companion object {
     private const val SCAN_REQUEST_CODE = 44281
+
+    internal fun resolveScannerMode(scannerModeStr: String): Int {
+      return when (scannerModeStr.uppercase()) {
+        "BASE" -> GmsDocumentScannerOptions.SCANNER_MODE_BASE
+        "BASE_WITH_FILTER" -> GmsDocumentScannerOptions.SCANNER_MODE_BASE_WITH_FILTER
+        else -> GmsDocumentScannerOptions.SCANNER_MODE_FULL
+      }
+    }
+
+    internal fun buildScannerOptions(
+      pageLimit: Int,
+      galleryImportAllowed: Boolean,
+      scannerModeStr: String
+    ): GmsDocumentScannerOptions {
+      return GmsDocumentScannerOptions.Builder()
+        .setGalleryImportAllowed(galleryImportAllowed)
+        .setPageLimit(max(1, pageLimit))
+        .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+        .setScannerMode(resolveScannerMode(scannerModeStr))
+        .build()
+    }
   }
 
   private var pendingScanPromise: Promise? = null
@@ -42,98 +64,101 @@ class CScannerMlkitModule : Module() {
       val promise = pendingScanPromise ?: return@OnActivityResult
       pendingScanPromise = null
 
-      if (payload.resultCode != Activity.RESULT_OK) {
-        promise.resolve(mapOf("cancelled" to true, "pages" to emptyList<Map<String, Any>>()))
-        return@OnActivityResult
-      }
-
-      val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(payload.data)
-      if (scanResult == null) {
-        promise.resolve(mapOf("cancelled" to true, "pages" to emptyList<Map<String, Any>>()))
-        return@OnActivityResult
-      }
-
-      val context = appContext.reactContext ?: run {
-        promise.reject("ERR_CONTEXT", "React context unavailable", null)
-        return@OnActivityResult
-      }
-
-      val outDir = File(context.cacheDir, "mlkit-scans").apply { mkdirs() }
-      val pages = mutableListOf<Map<String, Any>>()
-
-      scanResult.pages?.forEach { page ->
-        val destFile = File(outDir, "${UUID.randomUUID()}.jpg")
-        context.contentResolver.openInputStream(page.imageUri)?.use { input ->
-          FileOutputStream(destFile).use { output ->
-            input.copyTo(output)
-          }
+      try {
+        val data = payload.data
+        if (payload.resultCode != Activity.RESULT_OK || data == null) {
+          promise.resolve(mapOf("cancelled" to true, "pages" to emptyList<Map<String, Any>>()))
+          return@OnActivityResult
         }
-        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(destFile.absolutePath, opts)
-        pages.add(
-          mapOf(
-            "uri" to Uri.fromFile(destFile).toString(),
-            "width" to opts.outWidth,
-            "height" to opts.outHeight
+
+        val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(data)
+        if (scanResult == null) {
+          promise.resolve(mapOf("cancelled" to true, "pages" to emptyList<Map<String, Any>>()))
+          return@OnActivityResult
+        }
+
+        val context = appContext.reactContext ?: run {
+          promise.reject("ERR_CONTEXT", "React context unavailable", null)
+          return@OnActivityResult
+        }
+
+        val outDir = File(context.cacheDir, "mlkit-scans").apply { mkdirs() }
+        val pages = mutableListOf<Map<String, Any>>()
+
+        scanResult.pages?.forEach { page ->
+          val destFile = File(outDir, "${UUID.randomUUID()}.jpg")
+          context.contentResolver.openInputStream(page.imageUri)?.use { input ->
+            FileOutputStream(destFile).use { output ->
+              input.copyTo(output)
+            }
+          }
+          val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+          BitmapFactory.decodeFile(destFile.absolutePath, opts)
+          pages.add(
+            mapOf(
+              "uri" to Uri.fromFile(destFile).toString(),
+              "width" to opts.outWidth,
+              "height" to opts.outHeight
+            )
           )
+        }
+
+        promise.resolve(mapOf("cancelled" to false, "pages" to pages))
+      } catch (t: Throwable) {
+        promise.reject(
+          "ERR_SCAN_RESULT",
+          "${t.javaClass.simpleName}: ${t.message ?: "Failed processing scan result"}",
+          t
         )
       }
-
-      promise.resolve(mapOf("cancelled" to false, "pages" to pages))
     }
 
-    AsyncFunction("scanDocument") { options: Map<String, Any?>, promise: Promise ->
-      val activity = appContext.currentActivity
-      if (activity == null) {
-        promise.reject("ERR_NO_ACTIVITY", "Current activity is null", null)
-        return@AsyncFunction
-      }
-      if (pendingScanPromise != null) {
-        promise.reject("ERR_BUSY", "A scan is already in progress", null)
-        return@AsyncFunction
-      }
+    AsyncFunction("scanDocument") { pageLimit: Int, galleryImportAllowed: Boolean, scannerModeStr: String, promise: Promise ->
+      try {
+        val activity = appContext.currentActivity
+        if (activity == null || activity.isFinishing || activity.isDestroyed) {
+          promise.reject("ERR_NO_ACTIVITY", "Current activity is unavailable", null)
+          return@AsyncFunction
+        }
+        if (pendingScanPromise != null) {
+          promise.reject("ERR_BUSY", "A scan is already in progress", null)
+          return@AsyncFunction
+        }
 
-      val pageLimit = (options["pageLimit"] as? Number)?.toInt() ?: 24
-      val galleryImportAllowed = options["galleryImportAllowed"] as? Boolean ?: true
-      val scannerModeStr = options["scannerMode"] as? String ?: "FULL"
+        val scannerOptions = buildScannerOptions(pageLimit, galleryImportAllowed, scannerModeStr)
+        val scanner = GmsDocumentScanning.getClient(scannerOptions)
+        pendingScanPromise = promise
 
-      val scannerMode = when (scannerModeStr.uppercase()) {
-        "BASE" -> GmsDocumentScannerOptions.SCANNER_MODE_BASE
-        "BASE_WITH_FILTER" -> GmsDocumentScannerOptions.SCANNER_MODE_BASE_WITH_FILTER
-        else -> GmsDocumentScannerOptions.SCANNER_MODE_FULL
-      }
-
-      val scannerOptions = GmsDocumentScannerOptions.Builder()
-        .setGalleryImportAllowed(galleryImportAllowed)
-        .setPageLimit(pageLimit)
-        .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
-        .setScannerMode(scannerMode)
-        .build()
-
-      val scanner = GmsDocumentScanning.getClient(scannerOptions)
-      pendingScanPromise = promise
-
-      scanner.getStartScanIntent(activity)
-        .addOnSuccessListener { intentSender ->
-          try {
-            activity.startIntentSenderForResult(
-              intentSender,
-              SCAN_REQUEST_CODE,
-              null,
-              0,
-              0,
-              0
-            )
-          } catch (e: Exception) {
-            pendingScanPromise = null
-            promise.reject("ERR_LAUNCH_SCANNER", e.message ?: "Failed to launch ML Kit scanner", e)
+        scanner.getStartScanIntent(activity)
+          .addOnSuccessListener { intentSender ->
+            try {
+              activity.startIntentSenderForResult(
+                intentSender,
+                SCAN_REQUEST_CODE,
+                null,
+                0,
+                0,
+                0
+              )
+            } catch (e: Throwable) {
+              pendingScanPromise = null
+              promise.reject("ERR_LAUNCH_SCANNER", e.message ?: "Failed to launch ML Kit scanner", e)
+            }
           }
-        }
-        .addOnFailureListener { e ->
-          pendingScanPromise = null
-          promise.reject("ERR_SCANNER_UNAVAILABLE", e.message ?: "ML Kit scanner unavailable", e)
-        }
-    }
+          .addOnFailureListener { e ->
+            pendingScanPromise = null
+            promise.reject("ERR_SCANNER_UNAVAILABLE", e.message ?: "ML Kit scanner unavailable", e)
+          }
+      } catch (t: Throwable) {
+        pendingScanPromise = null
+        val frame = t.stackTrace.firstOrNull()?.let { "${it.className}.${it.methodName}:${it.lineNumber}" } ?: "unknown"
+        promise.reject(
+          "ERR_SCAN_EXCEPTION",
+          "${t.javaClass.name}: ${t.message ?: "null"} ($frame)",
+          t
+        )
+      }
+    }.runOnQueue(Queues.MAIN)
 
     AsyncFunction("recognizeText") { imageUri: String, promise: Promise ->
       val context = appContext.reactContext ?: run {
@@ -184,28 +209,27 @@ class CScannerMlkitModule : Module() {
       }
     }
 
-    AsyncFunction("processImage") { params: Map<String, Any?> ->
+    AsyncFunction("processImage") {
+      inputUri: String,
+      outputUri: String,
+      quadCoords: List<Double>?,
+      rotation: Int,
+      filter: String,
+      brightnessDouble: Double,
+      contrastDouble: Double,
+      qualityRaw: Int ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("React context unavailable")
 
-      val inputUri = params["inputUri"] as? String
-        ?: throw IllegalArgumentException("inputUri is required")
-      val outputUri = params["outputUri"] as? String
-        ?: throw IllegalArgumentException("outputUri is required")
-      val rotation = (params["rotation"] as? Number)?.toInt() ?: 0
-      val filter = (params["filter"] as? String) ?: "original"
-      val brightness = (params["brightness"] as? Number)?.toFloat() ?: 0f
-      val contrast = (params["contrast"] as? Number)?.toFloat() ?: 0f
-      val quality = ((params["quality"] as? Number)?.toInt() ?: 88).coerceIn(30, 100)
-
-      @Suppress("UNCHECKED_CAST")
-      val quadList = params["quad"] as? List<Map<String, Any?>>
+      val brightness = brightnessDouble.toFloat()
+      val contrast = contrastDouble.toFloat()
+      val quality = qualityRaw.coerceIn(30, 100)
 
       var bitmap = decodeOrientedBitmap(context.contentResolver, parseUri(inputUri))
         ?: throw IllegalArgumentException("Unable to decode inputUri: $inputUri")
 
-      if (quadList != null && quadList.size == 4) {
-        bitmap = warpQuadBitmap(bitmap, quadList)
+      if (quadCoords != null && quadCoords.size == 8) {
+        bitmap = warpQuadBitmap(bitmap, quadCoords)
       }
 
       if (rotation % 360 != 0) {
@@ -238,16 +262,9 @@ class CScannerMlkitModule : Module() {
       )
     }
 
-    AsyncFunction("composeIdCard") { params: Map<String, Any?> ->
+    AsyncFunction("composeIdCard") { frontUri: String, backUri: String, outputUri: String ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("React context unavailable")
-
-      val frontUri = params["frontUri"] as? String
-        ?: throw IllegalArgumentException("frontUri is required")
-      val backUri = params["backUri"] as? String
-        ?: throw IllegalArgumentException("backUri is required")
-      val outputUri = params["outputUri"] as? String
-        ?: throw IllegalArgumentException("outputUri is required")
 
       val frontBmp = decodeOrientedBitmap(context.contentResolver, parseUri(frontUri))
         ?: throw IllegalArgumentException("Unable to decode frontUri")
@@ -345,13 +362,12 @@ class CScannerMlkitModule : Module() {
     return rotated
   }
 
-  private fun warpQuadBitmap(src: Bitmap, quad: List<Map<String, Any?>>): Bitmap {
+  private fun warpQuadBitmap(src: Bitmap, quadCoords: List<Double>): Bitmap {
     val w = src.width.toFloat()
     val h = src.height.toFloat()
     fun pt(i: Int): Pair<Float, Float> {
-      val m = quad[i]
-      val x = ((m["x"] as? Number)?.toFloat() ?: 0f).coerceIn(0f, 1f) * w
-      val y = ((m["y"] as? Number)?.toFloat() ?: 0f).coerceIn(0f, 1f) * h
+      val x = quadCoords[i * 2].toFloat().coerceIn(0f, 1f) * w
+      val y = quadCoords[i * 2 + 1].toFloat().coerceIn(0f, 1f) * h
       return x to y
     }
 

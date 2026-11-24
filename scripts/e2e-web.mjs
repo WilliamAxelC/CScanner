@@ -108,6 +108,7 @@ async function run() {
 
   const pageErrors = [];
   const consoleErrors = [];
+  const failedAppRequests = [];
 
   try {
     const context = await browser.newContext({
@@ -116,9 +117,23 @@ async function run() {
     });
     const page = await context.newPage();
     page.on('pageerror', (err) => pageErrors.push(err.message));
+    page.on('requestfailed', (req) => {
+      const url = req.url();
+      if (!url.includes('static.cloudflareinsights.com')) {
+        failedAppRequests.push(`${url} (${req.failure()?.errorText || 'failed'})`);
+      }
+    });
     page.on('console', (msg) => {
       if (msg.type() === 'error') {
-        consoleErrors.push(msg.text());
+        const text = msg.text();
+        // Ignore Cloudflare edge beacon blocked by local DNS sinkhole
+        if (
+          text === 'Failed to load resource: net::ERR_NAME_NOT_RESOLVED' &&
+          liveUrl
+        ) {
+          return;
+        }
+        consoleErrors.push(text);
       }
     });
 
@@ -251,9 +266,15 @@ async function run() {
     if (liveUrl || fs.existsSync(path.join(distDir, 'download/index.html'))) {
       console.log('9. Checking Android APK download landing page');
       await page.goto(`${baseUrl}download/`, { waitUntil: 'networkidle' });
-      await page.getByText(/Download APK/).waitFor({ timeout: 10000 });
+      await page
+        .getByRole('link', { name: /Download APK/ })
+        .waitFor({ timeout: 10000 });
     }
 
+    assert(
+      failedAppRequests.length === 0,
+      `Failed app requests: ${failedAppRequests.join(' | ')}`,
+    );
     assert(
       pageErrors.length === 0,
       `Page errors encountered: ${pageErrors.join(' | ')}`,

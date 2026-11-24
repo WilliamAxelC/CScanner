@@ -63,9 +63,6 @@ const html = `<!DOCTYPE html>
   <title>CScanner | Ad-Free Document Scanner (Android APK &amp; Web PWA)</title>
   <meta name="description" content="Ad-free, offline-first CamScanner replacement for Android (ML Kit + on-device OCR + AES-256 PDF) and Web PWA with optional Google Drive sync." />
   <link rel="icon" href="icon-192.png" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fira+Code:wght@500&display=swap" rel="stylesheet" />
   <style>
     :root {
       --bg: #090d16; --card: #111827; --border: #1f2937; --text: #f9fafb; --muted: #9ca3af;

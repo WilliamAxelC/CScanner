@@ -111,19 +111,50 @@ class CScannerMlkitModule : Module() {
       return false
     }
 
-    internal fun resolveSafeOutputFile(uriStr: String, allowedRoots: List<File>): File {
-      if (uriStr.isBlank()) {
-        throw SecurityException("Output URI cannot be empty")
+    private fun parseLocalOrContentUri(uriStr: String): Pair<String?, String?> {
+      val trimmed = uriStr.trim()
+      if (trimmed.isEmpty()) return Pair(null, null)
+      if (trimmed.startsWith("/")) return Pair(null, trimmed)
+      val colonIdx = trimmed.indexOf(':')
+      if (colonIdx <= 0) return Pair(null, null)
+      val scheme = trimmed.substring(0, colonIdx).lowercase()
+      if (!scheme.all { it.isLetterOrDigit() || it == '+' || it == '-' || it == '.' }) {
+        return Pair(null, null)
       }
-      val rawPath = if (uriStr.startsWith("/")) {
-        uriStr
-      } else {
-        val parsed = Uri.parse(uriStr)
-        val scheme = parsed.scheme?.lowercase()
-        if (scheme != "file" || parsed.path.isNullOrBlank()) {
-          throw SecurityException("Output URI must use a file:// path within app storage")
+      if (scheme == "content") {
+        val afterScheme = trimmed.substring(colonIdx + 1)
+        return Pair("content", afterScheme.takeIf { it.startsWith("//") && it.length > 2 })
+      }
+      if (scheme == "file") {
+        try {
+          val parsed = java.net.URI(trimmed)
+          val host = parsed.host
+          if (host != null && host.isNotEmpty() && !host.equals("localhost", ignoreCase = true)) {
+            return Pair("file", null)
+          }
+          if (!parsed.path.isNullOrBlank()) {
+            return Pair("file", parsed.path)
+          }
+        } catch (_: Exception) {
+          // fall through to raw unescaped file:// path handling
         }
-        parsed.path!!
+        val afterColon = trimmed.substring(colonIdx + 1).substringBefore('?').substringBefore('#')
+        val fallbackPath = when {
+          afterColon.startsWith("///") -> afterColon.substring(2)
+          afterColon.startsWith("//localhost/") -> afterColon.substring(11)
+          afterColon.startsWith("//") -> null
+          afterColon.startsWith("/") -> afterColon
+          else -> null
+        }
+        return Pair("file", fallbackPath)
+      }
+      return Pair(scheme, trimmed.substring(colonIdx + 1))
+    }
+
+    internal fun resolveSafeOutputFile(uriStr: String, allowedRoots: List<File>): File {
+      val (scheme, rawPath) = parseLocalOrContentUri(uriStr)
+      if (rawPath.isNullOrBlank() || (scheme != null && scheme != "file")) {
+        throw SecurityException("Output URI must use a file:// path within app storage")
       }
 
       val target = File(rawPath)
@@ -134,30 +165,19 @@ class CScannerMlkitModule : Module() {
     }
 
     internal fun isAllowedInputUri(uriStr: String, allowedRoots: List<File>): Boolean {
-      if (uriStr.isBlank()) return false
-      if (uriStr.startsWith("/")) {
-        return isInsideAllowedRoots(File(uriStr), allowedRoots)
-      }
-      val parsed = Uri.parse(uriStr)
-      return when (parsed.scheme?.lowercase()) {
-        "content" -> true
-        "file" -> !parsed.path.isNullOrBlank() && isInsideAllowedRoots(File(parsed.path!!), allowedRoots)
+      val (scheme, path) = parseLocalOrContentUri(uriStr)
+      return when (scheme) {
+        null -> !path.isNullOrBlank() && isInsideAllowedRoots(File(path), allowedRoots)
+        "content" -> !path.isNullOrBlank()
+        "file" -> !path.isNullOrBlank() && isInsideAllowedRoots(File(path), allowedRoots)
         else -> false
       }
     }
 
     internal fun resolveSafeUpdateApkFile(uriStr: String, cacheDir: File): File {
-      if (uriStr.isBlank()) {
-        throw IllegalArgumentException("APK URI cannot be empty")
-      }
-      val rawPath = if (uriStr.startsWith("/")) {
-        uriStr
-      } else {
-        val parsed = Uri.parse(uriStr)
-        if (parsed.scheme?.lowercase() != "file" || parsed.path.isNullOrBlank()) {
-          throw IllegalArgumentException("APK URI must use a file:// path")
-        }
-        parsed.path!!
+      val (scheme, rawPath) = parseLocalOrContentUri(uriStr)
+      if (rawPath.isNullOrBlank() || (scheme != null && scheme != "file")) {
+        throw IllegalArgumentException("APK URI must use a file:// path")
       }
       val updatesRoot = File(cacheDir, "updates").canonicalFile
       val target = File(rawPath).canonicalFile

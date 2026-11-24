@@ -64,7 +64,11 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      - name: Accept Android SDK licenses
+        run: |
+          SDK_MGR=$(find "${ANDROID_HOME}/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)
+          echo "Using sdkmanager: $SDK_MGR"
+          yes | "$SDK_MGR" --licenses >/dev/null 2>&1 || true
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

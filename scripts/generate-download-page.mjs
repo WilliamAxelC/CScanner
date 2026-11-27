@@ -52,11 +52,14 @@ if (fs.existsSync(iconSrc)) {
 }
 
 const releaseNotes = [
-  'Added production Accessibility panel (Text Size, High Contrast WCAG AAA palette, Reduce Motion, confirmation toggles)',
-  'Added App Info screen with live update check, storage breakdown, cache cleanup, and sanitized diagnostics',
-  'Added Bug Reports, Feature Requests, and transparent Privacy screens',
-  'Security hardening: real pixel & OCR redaction burning, native Kotlin URI/bitmap confinement, memory-only web OAuth, allowBackup=false, strict nginx security headers',
+  'CScanner has a new app ID (dev.cuang.cscanner), so this version installs as a separate app instead of updating this one',
+  'Export the scans you want to keep, install the new CScanner from the download page, then uninstall this one',
+  'Releases are now signed with CScanner\'s own key, so later updates install from inside the app',
 ];
+
+// Set for a release that changes the package id or signing key: older apps can't install it in place, so
+// version.json leaves out the APK fields and their Update button opens the download page instead.
+const noInAppApk = process.env.NO_IN_APP_APK === '1';
 
 const versionMeta = {
   name: 'CScanner',
@@ -66,7 +69,7 @@ const versionMeta = {
   date: builtAt.slice(0, 10),
   url: `https://cuang.dev${basePath}/download/`,
   notes: releaseNotes,
-  apk: {
+  inAppApk: {
     url: `https://cuang.dev${basePath}/download/${apkFileName}`,
     sha256,
     sizeBytes: apkBytes.length,
@@ -80,6 +83,13 @@ const versionMeta = {
   downloadUrl: `${basePath}/download/${apkFileName}`,
   releaseNotes,
 };
+const { inAppApk } = versionMeta;
+delete versionMeta.inAppApk;
+if (noInAppApk) {
+  for (const key of ['sha256', 'sizeBytes', 'downloadUrl']) delete versionMeta[key];
+} else {
+  versionMeta.apk = inAppApk;
+}
 fs.writeFileSync(
   path.join(outDir, 'version.json'),
   JSON.stringify(versionMeta, null, 2) + '\n',
@@ -200,6 +210,7 @@ const html = `<!DOCTYPE html>
         <li>Tap <strong>Download APK</strong> above on your Android phone.</li>
         <li>Open the downloaded <code>${safeApkFileName}</code> from your browser downloads or notification shade.</li>
         <li>If prompted, allow <strong>Install unknown apps</strong> for your browser, then tap <strong>Install</strong>.</li>
+        <li>Coming from 1.1.0? 1.1.1 has a new app ID, so it installs next to the old CScanner. Export the scans you want to keep from the old app first, then uninstall it.</li>
       </ol>
       <p class="note">Source code &amp; automated releases: <a href="https://github.com/WilliamAxelC/CScanner" target="_blank" rel="noopener noreferrer">github.com/WilliamAxelC/CScanner</a></p>
     </section>

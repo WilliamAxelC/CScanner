@@ -290,7 +290,7 @@ async function run() {
     await vis(page.getByText('dev.cuang.cscanner', { exact: true })).waitFor({ timeout: 10000 });
     await vis(page.getByText('Version 1.1.1 (build 3)', { exact: true })).waitFor({ timeout: 10000 });
     await vis(page.getByLabel('View Diagnostics')).click();
-    await vis(page.getByText(/Package ID: com\.cscanner\.app/)).waitFor({ timeout: 10000 });
+    await vis(page.getByText(/Package ID: dev\.cuang\.cscanner/)).waitFor({ timeout: 10000 });
     await vis(page.getByLabel('Open Source Licenses')).click();
     await vis(page.getByText(/Google ML Kit Document Scanner/)).waitFor({ timeout: 10000 });
     await vis(page.getByLabel('Back')).click();

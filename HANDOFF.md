@@ -3,10 +3,11 @@
 ## Last updated
 - **Date**: 2026-11-27
 - **Agent / Model**: Claude Code (Opus 5.5)
-- **Branch @ Commit**: `main`, package-id rename committed locally on top of `7498fc7`, not pushed
+- **Branch @ Commit**: `main` (pushed; tag `v1.1.1` @ `7bdf75d`)
 
 ## Current state
-- **Version live**: `1.1.0` (`versionCode: 2`, package `com.cscanner.app`). Next release 1.1.1 moves to `dev.cuang.cscanner` (see In progress).
+- **Version live**: `1.1.1` (`versionCode: 3`, package `dev.cuang.cscanner`, signed with CScanner's private key; APK SHA-256 `08367d21…1f5d`). Released 2026-11-27 from CI run `45951965329`. Before that 1.1.0 (`com.cscanner.app`, public debug key).
+- **1.1.1 is a new app on phones** (new package id and key), so its `version.json` was generated with `NO_IN_APP_APK=1`: no APK fields, and 1.1.0's Update button opens the download page. **Generate 1.1.2 without `NO_IN_APP_APK`** so in-app updates work again, and replace the hard-coded `releaseNotes` in `scripts/generate-download-page.mjs`.
 - **Live Web PWA**: `https://cuang.dev/projects/cscanner/` (`HTTP/2 200`, Workbox offline precache active).
 - **Live APK Download & Update Feed**:
   - `https://cuang.dev/projects/cscanner/download/` (`HTTP/2 200`)
@@ -25,9 +26,7 @@
   - Security remediations across PDF/JPEG redactions, Drive sync manifest validation/conflict isolation, memory-only web OAuth tokens, deep-link prototype safety, native Kotlin confinement/OOM guards, and origin nginx security headers (`SECURITY_AUDIT.md`).
 
 ## In progress
-- **1.1.1 (versionCode 3): package id `dev.cuang.cscanner`** (was `com.cscanner.app`). Committed locally, not pushed or released. The live site still serves 1.1.0.
-  - Release: push `main` plus tag `v1.1.1` (CI builds the APK), download the artifact, `node scripts/generate-download-page.mjs`, `pnpm build:web:cuang`, `./scripts/deploy-cuang.sh`.
-  - For this one release, drop `apk`, `downloadUrl`, `sha256` and `sizeBytes` from the published `version.json`. 1.1.0 then opens the download page instead of downloading an APK its package check would reject. Put them back from 1.1.2 on.
+- None. 1.1.1 is built, deployed and passes the live web E2E (10 flows).
 
 ## Next steps
 - Optional: test on physical Android device to exercise native ML Kit scanning, "Install unknown apps" flow, and TalkBack end-to-end.
@@ -42,8 +41,8 @@
 - Web PWA export (`cuang.dev` subpath): `pnpm build:web:cuang`
 - Local Web E2E: `pnpm test:e2e` (10 flows passed, 0 console/page/request errors)
 - Live Web E2E: `E2E_URL=https://cuang.dev/projects/cscanner/ pnpm test:e2e` (10 flows passed, 0 errors)
-- Generate download page (after downloading CI APK): `node scripts/generate-download-page.mjs`
-- Deploy to `docker-host` nginx (`projects-cuang-nginx`): `./scripts/deploy-cuang.sh`
+- Generate download page (after downloading the CI APK with `gh run download <run> -n cscanner-android-apk -D build-output`): `node scripts/generate-download-page.mjs` (prefix `NO_IN_APP_APK=1` only for a release with a new package id or key)
+- Deploy to `docker-host` nginx (`projects-cuang-nginx`): `./scripts/deploy-cuang.sh`. Its second half rewrites the root-owned nginx.conf; when only files changed, the first half (tar to the host copy, then `docker cp`) is enough, which is what 1.1.1 did.
 
 ## Gotchas
 - **Release signing (from 1.1.1):** CI re-signs the APK with CScanner's private key from the `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASS`, `ANDROID_KEY_PASS` and `ANDROID_KEY_ALIAS` (`cscanner`) secrets. Certificate SHA-256 `7F:4D:81:EC:2D:50:8A:9F:3B:BC:8B:16:DF:5E:CF:3D:AA:30:71:48:4A:BD:04:0D:1D:93:31:45:49:D9:60:A2`. The keystore itself is kept privately outside the repo (ask the user). Losing it means users must reinstall to update. 1.1.0 and older were signed with the public Android debug key.

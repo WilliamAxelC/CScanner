@@ -287,8 +287,8 @@ async function run() {
 
     // App Info screen
     await vis(page.getByLabel('App Info')).click();
-    await vis(page.getByText('com.cscanner.app', { exact: true })).waitFor({ timeout: 10000 });
-    await vis(page.getByText('Version 1.1.0 (build 2)', { exact: true })).waitFor({ timeout: 10000 });
+    await vis(page.getByText('dev.cuang.cscanner', { exact: true })).waitFor({ timeout: 10000 });
+    await vis(page.getByText('Version 1.1.1 (build 3)', { exact: true })).waitFor({ timeout: 10000 });
     await vis(page.getByLabel('View Diagnostics')).click();
     await vis(page.getByText(/Package ID: com\.cscanner\.app/)).waitFor({ timeout: 10000 });
     await vis(page.getByLabel('Open Source Licenses')).click();

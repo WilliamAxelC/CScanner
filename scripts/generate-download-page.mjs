@@ -30,7 +30,7 @@ const appCfg = JSON.parse(
 );
 const version = pkg.version || appCfg.expo?.version || '1.1.0';
 const versionCode = appCfg.expo?.android?.versionCode || 2;
-const packageId = appCfg.expo?.android?.package || 'com.cscanner.app';
+const packageId = appCfg.expo?.android?.package || 'dev.cuang.cscanner';
 const apkFileName = `cscanner-${version}.apk`;
 
 if (!fs.existsSync(apkInput)) {

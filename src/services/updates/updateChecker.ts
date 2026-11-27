@@ -6,7 +6,7 @@ import type { AppSettings } from '../../types/models';
 import { safeJsonParse, sanitizeErrorMessage } from '../../utils/security';
 
 export const ALLOWED_LINK_PREFIX = 'https://cuang.dev/';
-export const CSCANNER_PACKAGE = 'com.cscanner.app';
+export const CSCANNER_PACKAGE = 'dev.cuang.cscanner';
 export const VERSION_CHECK_URL =
   'https://cuang.dev/projects/cscanner/download/version.json';
 export const DOWNLOAD_PAGE_URL =

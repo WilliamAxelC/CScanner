@@ -1,5 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Installed version for these tests (the app reads app.json first), so a release bump doesn't change them.
+vi.mock('../../app.json', () => ({
+  default: {
+    expo: {
+      name: 'CScanner',
+      version: '1.1.0',
+      android: { versionCode: 2, package: 'dev.cuang.cscanner' },
+    },
+  },
+}));
+
 vi.mock('react-native', () => ({
   Platform: { OS: 'android', Version: 35 },
   Share: {
@@ -15,7 +26,7 @@ vi.mock('expo-constants', () => ({
       version: '1.1.0',
       android: {
         versionCode: 2,
-        package: 'com.cscanner.app',
+        package: 'dev.cuang.cscanner',
       },
     },
   },
@@ -34,9 +45,12 @@ import {
   buildReportMarkdown,
   validateReport,
 } from '../services/feedback/reportBuilder';
+import { readFileSync } from 'node:fs';
+
 import {
   checkForUpdates,
   compareSemver,
+  CSCANNER_PACKAGE,
   getInstalledAppInfo,
 } from '../services/updates/updateChecker';
 import { DEFAULT_APP_SETTINGS } from '../types/models';
@@ -48,7 +62,7 @@ describe('Diagnostics, Updates & Feedback Services', () => {
 
   it('redacts tokens, emails, digit runs, and filesystem paths in error logs', () => {
     const cleaned = redactSensitiveText(
-      'Auth Bearer ya29.superSecretXYZ failed for bob@acme.org at /data/user/0/com.cscanner.app/files/secret.jpg card 4532015112830366',
+      'Auth Bearer ya29.superSecretXYZ failed for bob@acme.org at /data/user/0/dev.cuang.cscanner/files/secret.jpg card 4532015112830366',
     );
     expect(cleaned).not.toContain('ya29.superSecretXYZ');
     expect(cleaned).not.toContain('bob@acme.org');
@@ -86,7 +100,7 @@ describe('Diagnostics, Updates & Feedback Services', () => {
     });
 
     expect(report).toContain('App: CScanner v1.1.0 (build 2)');
-    expect(report).toContain('Package ID: com.cscanner.app');
+    expect(report).toContain('Package ID: dev.cuang.cscanner');
     expect(report).toContain('Font Scale: 115%');
     expect(report).toContain('Local Store: 3 docs, 7 pages, 1 signatures, 2 pending sync');
     expect(report).not.toContain('private-user@gmail.com');
@@ -109,7 +123,7 @@ describe('Diagnostics, Updates & Feedback Services', () => {
         name: 'CScanner',
         version: '1.1.0',
         versionCode: 2,
-        packageId: 'com.cscanner.app',
+        packageId: 'dev.cuang.cscanner',
       }),
     }));
     expect(upToDate.status).toBe('up-to-date');
@@ -121,7 +135,7 @@ describe('Diagnostics, Updates & Feedback Services', () => {
         name: 'CScanner',
         version: '1.2.0',
         versionCode: 3,
-        packageId: 'com.cscanner.app',
+        packageId: 'dev.cuang.cscanner',
         sizeLabel: '28.4 MB',
         sha256: 'a'.repeat(64),
         releaseNotes: ['New scanner filters'],
@@ -178,5 +192,13 @@ describe('Diagnostics, Updates & Feedback Services', () => {
     const parsed = new URL(url);
     expect(parsed.searchParams.get('labels')).toBe('enhancement');
     expect(parsed.searchParams.get('title')).toBe('[Feature] Keyboard shortcuts');
+  });
+});
+
+describe('package id', () => {
+  it('the updater only installs APKs with the package id the app is built with', () => {
+    const appConfig = JSON.parse(readFileSync(new URL('../../app.json', import.meta.url), 'utf8'));
+    expect(CSCANNER_PACKAGE).toBe(appConfig.expo.android.package);
+    expect(CSCANNER_PACKAGE).toBe('dev.cuang.cscanner');
   });
 });

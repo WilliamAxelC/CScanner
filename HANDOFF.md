@@ -1,12 +1,12 @@
 # CScanner Handoff
 
 ## Last updated
-- **Date**: 2026-11-24
-- **Agent / Model**: Antigravity (Execution phase)
-- **Branch @ Commit**: `main` @ `a6811db`
+- **Date**: 2026-11-27
+- **Agent / Model**: Claude Code (Opus 5.5)
+- **Branch @ Commit**: `main`, package-id rename committed locally on top of `7498fc7`, not pushed
 
 ## Current state
-- **Version**: `1.1.0` (`versionCode: 2`, package `com.cscanner.app`).
+- **Version live**: `1.1.0` (`versionCode: 2`, package `com.cscanner.app`). Next release 1.1.1 moves to `dev.cuang.cscanner` (see In progress).
 - **Live Web PWA**: `https://cuang.dev/projects/cscanner/` (`HTTP/2 200`, Workbox offline precache active).
 - **Live APK Download & Update Feed**:
   - `https://cuang.dev/projects/cscanner/download/` (`HTTP/2 200`)
@@ -18,25 +18,28 @@
   - Android manifest verified: `allowBackup=false`, `usesCleartextTraffic=false`, `REQUEST_INSTALL_PACKAGES` present (used solely by the in-app SHA-256 + package-verified APK self-updater), zero `RECORD_AUDIO`.
 - **Production Features Shipped**:
   - `app/accessibility.tsx`: Independent text scaling (`0.9`, `1.0`, `1.15`, `1.3`), High Contrast WCAG AAA palettes, Reduce Motion synced with OS preference, Confirm Before Delete toggle, live preview, Android Accessibility Settings shortcut.
-  - `app/app-info.tsx`, `src/components/UpdateSheet.tsx`, `src/services/updates/`: Version/build card, once-daily automatic Android update checks (`version.json`) + dismissible update banner (`testID="update-banner"` on `app/index.tsx`), in-app APK downloader with progress bar, SHA-256 + `com.cscanner.app` `versionCode` verification, `FileProvider` package-installer handoff (`modules/cscanner-mlkit/`), install-permission restart resume, vault storage breakdown, cache cleanup, sanitized diagnostics viewer/copier, and Open Source Licenses.
+  - `app/app-info.tsx`, `src/components/UpdateSheet.tsx`, `src/services/updates/`: Version/build card, once-daily automatic Android update checks (`version.json`) + dismissible update banner (`testID="update-banner"` on `app/index.tsx`), in-app APK downloader with progress bar, SHA-256 + `dev.cuang.cscanner` `versionCode` verification, `FileProvider` package-installer handoff (`modules/cscanner-mlkit/`), install-permission restart resume, vault storage breakdown, cache cleanup, sanitized diagnostics viewer/copier, and Open Source Licenses.
   - `app/report.tsx`: Bug Report / Feature Request composer opening pre-filled GitHub Issues (`https://github.com/WilliamAxelC/CScanner/issues/new`) with clipboard Markdown fallback and opt-in sanitized diagnostics preview.
   - `app/privacy.tsx`: Transparent disclosure of local vault storage and every optional outbound network call.
   - `app/settings.tsx`, `ErrorBoundary.tsx`, `ConfirmDialog.tsx`: Grouped production Settings hub, confirmation dialogs before deletes, and typed `ERASE` local vault wipe.
   - Security remediations across PDF/JPEG redactions, Drive sync manifest validation/conflict isolation, memory-only web OAuth tokens, deep-link prototype safety, native Kotlin confinement/OOM guards, and origin nginx security headers (`SECURITY_AUDIT.md`).
 
 ## In progress
-- None (`v1.1.0` build, unit tests, CI APK, deploy, and live E2E complete).
+- **1.1.1 (versionCode 3): package id `dev.cuang.cscanner`** (was `com.cscanner.app`). Committed locally, not pushed or released. The live site still serves 1.1.0.
+  - Release: push `main` plus tag `v1.1.1` (CI builds the APK), download the artifact, `node scripts/generate-download-page.mjs`, `pnpm build:web:cuang`, `./scripts/deploy-cuang.sh`.
+  - For this one release, drop `apk`, `downloadUrl`, `sha256` and `sizeBytes` from the published `version.json`. 1.1.0 then opens the download page instead of downloading an APK its package check would reject. Put them back from 1.1.2 on.
 
 ## Next steps
 - Optional: test on physical Android device to exercise native ML Kit scanning, "Install unknown apps" flow, and TalkBack end-to-end.
 
 ## Waiting on the user
+- **Release signing:** the repo has no `ANDROID_KEYSTORE_*` secrets, so CI signs each APK with a new throwaway key and in-app updates can never install over the previous build. Set a persistent keystore before 1.1.1 ships (it's a fresh install anyway, so this is the cheap moment).
 - Repository owner optional setup: configure persistent `ANDROID_KEYSTORE_*` GitHub Secrets (CI currently falls back to an ephemeral keystore) and `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` / `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID` for Google Drive OAuth.
 - Optional infra check outside repo: upstream Express reverse proxy in front of `projects-cuang-nginx` (`port 8095`) currently preserves `Permissions-Policy`, `Referrer-Policy`, and `X-Content-Type-Options` while omitting origin `Content-Security-Policy` and `X-Frame-Options` headers on public `https://cuang.dev`.
 
 ## Build, test, deploy
 - Typecheck: `pnpm exec tsc --noEmit` (passed, 0 errors)
-- Unit tests: `pnpm test` (`vitest run`: 6 files, 31 tests passed)
+- Unit tests: `pnpm test` (`vitest run`: 6 files, 32 tests passed)
 - Web PWA export (`cuang.dev` subpath): `pnpm build:web:cuang`
 - Local Web E2E: `pnpm test:e2e` (10 flows passed, 0 console/page/request errors)
 - Live Web E2E: `E2E_URL=https://cuang.dev/projects/cscanner/ pnpm test:e2e` (10 flows passed, 0 errors)

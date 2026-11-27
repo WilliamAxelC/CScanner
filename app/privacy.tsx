@@ -9,7 +9,7 @@ const NETWORK_ENDPOINTS = [
   {
     host: 'cuang.dev/projects/cscanner/download/version.json',
     when: 'At most once daily on Android when Auto-Check Updates is on, or manually in App Info.',
-    data: 'Plain GET request returning latest APK version, release notes, and SHA-256 checksum. Any downloaded in-app update APK is verified against its SHA-256 checksum and com.cscanner.app signature before handing to Android Installer.',
+    data: 'Plain GET request returning latest APK version, release notes, and SHA-256 checksum. Any downloaded in-app update APK is verified against its SHA-256 checksum and dev.cuang.cscanner signature before handing to Android Installer.',
   },
   {
     host: 'oauth2.googleapis.com & www.googleapis.com/drive/v3',

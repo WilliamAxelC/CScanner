@@ -68,7 +68,7 @@ CScanner works 100% locally without any cloud configuration. To enable cross-dev
      - Add Authorized JavaScript origins (e.g. `http://localhost:8081`, `https://your-pwa-domain.example`).
      - Add Authorized redirect URIs matching your origin.
    - **Android** (for the APK):
-     - Package name: `com.cscanner.app`
+     - Package name: `dev.cuang.cscanner`
      - SHA-1 signing certificate fingerprint of your keystore (`keytool -list -v -keystore ...`).
 5. Copy `.env.example` to `.env` and fill in your IDs:
 

@@ -4,6 +4,9 @@ All notable changes to CScanner are documented in this file using [Keep a Change
 
 ## [Unreleased]
 
+### Changed
+- Android package id is now `dev.cuang.cscanner` (was `com.cscanner.app`), matching the other cuang.dev apps. Android treats it as a new app, so 1.1.0 can't update to it in place: install 1.1.1 from the download page and uninstall the old one (export anything you want to keep first). Version 1.1.1 (versionCode 3).
+
 ## [1.1.0] - 2026-11-24
 
 ### Added

@@ -5,6 +5,17 @@ const { linkingOpenUrlMock, platformState } = vi.hoisted(() => ({
   platformState: { OS: 'android' as 'android' | 'web', Version: 35 },
 }));
 
+// Installed version for these tests (the app reads app.json first), so a release bump doesn't change them.
+vi.mock('../../app.json', () => ({
+  default: {
+    expo: {
+      name: 'CScanner',
+      version: '1.1.0',
+      android: { versionCode: 2, package: 'dev.cuang.cscanner' },
+    },
+  },
+}));
+
 vi.mock('expo', () => ({
   requireOptionalNativeModule: vi.fn(() => null),
 }));
@@ -25,7 +36,7 @@ vi.mock('expo-constants', () => ({
       version: '1.1.0',
       android: {
         versionCode: 2,
-        package: 'com.cscanner.app',
+        package: 'dev.cuang.cscanner',
       },
     },
   },
@@ -72,7 +83,7 @@ function createMockNative(overrides: Partial<UpdateNativeApi> = {}): UpdateNativ
     canInstallPackages: vi.fn(() => true),
     openInstallPermissionSettings: vi.fn(() => true),
     inspectApk: vi.fn(() => ({
-      packageName: 'com.cscanner.app',
+      packageName: 'dev.cuang.cscanner',
       versionCode: 3,
       versionName: '1.2.0',
     })),
@@ -83,7 +94,7 @@ function createMockNative(overrides: Partial<UpdateNativeApi> = {}): UpdateNativ
 
 function createMockFs(overrides: Partial<UpdateFsApi> = {}): UpdateFsApi {
   return {
-    cacheDirectory: 'file:///data/user/0/com.cscanner.app/cache/',
+    cacheDirectory: 'file:///data/user/0/dev.cuang.cscanner/cache/',
     makeDirectoryAsync: vi.fn(async () => undefined),
     getInfoAsync: vi.fn(async () => ({ exists: false })),
     deleteAsync: vi.fn(async () => undefined),
@@ -227,7 +238,7 @@ describe('Auto-Update Checker & In-App APK Installer', () => {
     expect(native.sha256File).toHaveBeenCalledTimes(1);
     expect(native.inspectApk).toHaveBeenCalledTimes(1);
     expect(native.installApk).toHaveBeenCalledWith(
-      'file:///data/user/0/com.cscanner.app/cache/updates/cscanner-1.2.0-3.apk',
+      'file:///data/user/0/dev.cuang.cscanner/cache/updates/cscanner-1.2.0-3.apk',
     );
     expect(useAppUpdateStore.getState().status).toBe('installing');
     expect(useAppUpdateStore.getState().progress).toBe(1);
@@ -348,15 +359,15 @@ describe('Auto-Update Checker & In-App APK Installer', () => {
     (fs.deleteAsync as ReturnType<typeof vi.fn>).mockClear();
     await cleanUpInstalledUpdates();
     expect(fs.deleteAsync).toHaveBeenCalledWith(
-      'file:///data/user/0/com.cscanner.app/cache/updates/cscanner-1.0.0-1.apk',
+      'file:///data/user/0/dev.cuang.cscanner/cache/updates/cscanner-1.0.0-1.apk',
       { idempotent: true },
     );
     expect(fs.deleteAsync).toHaveBeenCalledWith(
-      'file:///data/user/0/com.cscanner.app/cache/updates/cscanner-1.1.0-2.apk',
+      'file:///data/user/0/dev.cuang.cscanner/cache/updates/cscanner-1.1.0-2.apk',
       { idempotent: true },
     );
     expect(fs.deleteAsync).not.toHaveBeenCalledWith(
-      'file:///data/user/0/com.cscanner.app/cache/updates/cscanner-1.2.0-3.apk',
+      'file:///data/user/0/dev.cuang.cscanner/cache/updates/cscanner-1.2.0-3.apk',
       { idempotent: true },
     );
   });

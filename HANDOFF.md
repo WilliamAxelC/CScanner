@@ -33,8 +33,7 @@
 - Optional: test on physical Android device to exercise native ML Kit scanning, "Install unknown apps" flow, and TalkBack end-to-end.
 
 ## Waiting on the user
-- **Release signing:** the repo has no `ANDROID_KEYSTORE_*` secrets, so CI signs each APK with a new throwaway key and in-app updates can never install over the previous build. Set a persistent keystore before 1.1.1 ships (it's a fresh install anyway, so this is the cheap moment).
-- Repository owner optional setup: configure persistent `ANDROID_KEYSTORE_*` GitHub Secrets (CI currently falls back to an ephemeral keystore) and `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` / `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID` for Google Drive OAuth.
+- Repository owner optional setup: configure `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` / `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID` for Google Drive OAuth.
 - Optional infra check outside repo: upstream Express reverse proxy in front of `projects-cuang-nginx` (`port 8095`) currently preserves `Permissions-Policy`, `Referrer-Policy`, and `X-Content-Type-Options` while omitting origin `Content-Security-Policy` and `X-Frame-Options` headers on public `https://cuang.dev`.
 
 ## Build, test, deploy
@@ -47,6 +46,7 @@
 - Deploy to `docker-host` nginx (`projects-cuang-nginx`): `./scripts/deploy-cuang.sh`
 
 ## Gotchas
+- **Release signing (from 1.1.1):** CI re-signs the APK with CScanner's private key from the `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASS`, `ANDROID_KEY_PASS` and `ANDROID_KEY_ALIAS` (`cscanner`) secrets. Certificate SHA-256 `7F:4D:81:EC:2D:50:8A:9F:3B:BC:8B:16:DF:5E:CF:3D:AA:30:71:48:4A:BD:04:0D:1D:93:31:45:49:D9:60:A2`. The keystore itself is kept privately outside the repo (ask the user). Losing it means users must reinstall to update. 1.1.0 and older were signed with the public Android debug key.
 - **Metro `ExponentConstants` cache**: `scripts/build-pwa.mjs` runs `npx expo export --platform web --clear` because Metro caches serialized `app.json` manifest values across rebuilds.
 - **No local Android SDK/JDK**: Never install Android SDK locally or run Gradle on `docker-host` (2 GiB RAM); always build Android APKs via `.github/workflows/build.yml`.
 - **Android JVM unit tests**: Do not call `android.net.Uri.parse` inside pure companion helpers tested under `:cscanner-mlkit:testDebugUnitTest` without Robolectric; use pure Kotlin/Java URI parsing (`parseLocalOrContentUri`).
